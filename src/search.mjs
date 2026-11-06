@@ -86,27 +86,54 @@ export function createSearchRunner({ db, jobs, settings, discover, processVerifi
       status TEXT NOT NULL,
       fast_mode INTEGER NOT NULL,
       result TEXT,
-      error TEXT
+      error TEXT,
+      scheduled_date TEXT
     );
     UPDATE search_runs SET status = 'failed', error = '上次搜索已中断，可以重跑'
       WHERE status = 'running';
   `);
-  const insert = db.prepare('INSERT INTO search_runs (id, status, fast_mode) VALUES (?, ?, ?)');
+  // 旧版数据库保留手动搜索历史，计划日期仅用于定时搜索。
+  if (!db.prepare('PRAGMA table_info(search_runs)').all().some(column => column.name === 'scheduled_date')) {
+    db.exec('ALTER TABLE search_runs ADD COLUMN scheduled_date TEXT');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS search_runs_scheduled_date ON search_runs (scheduled_date)');
+  const insert = db.prepare(`
+    INSERT INTO search_runs (id, status, fast_mode, scheduled_date, error) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (scheduled_date) DO NOTHING
+  `);
+  const findScheduled = db.prepare('SELECT id FROM search_runs WHERE scheduled_date = ?');
+  const scheduleActive = db.prepare('UPDATE OR IGNORE search_runs SET scheduled_date = ? WHERE id = ? AND scheduled_date IS NULL');
   const finish = db.prepare('UPDATE search_runs SET status = ?, result = ?, error = ? WHERE id = ?');
-  const get = db.prepare('SELECT id, status, fast_mode AS fastMode, result, error FROM search_runs WHERE id = ?');
-  const list = db.prepare('SELECT id, status, fast_mode AS fastMode FROM search_runs ORDER BY rowid DESC LIMIT 10');
+  const get = db.prepare(`
+    SELECT id, status, fast_mode AS fastMode, scheduled_date AS scheduledDate, result, error FROM search_runs WHERE id = ?
+  `);
+  const list = db.prepare(`
+    SELECT id, status, fast_mode AS fastMode, scheduled_date AS scheduledDate FROM search_runs ORDER BY rowid DESC LIMIT 10
+  `);
   let active;
   let closing = false;
 
   return {
-    start() {
+    start({ scheduledDate = null } = {}) {
       if (closing) return { error: '本机服务正在关闭' };
-      if (active) return { id: active.id };
+      if (scheduledDate) {
+        const existing = findScheduled.get(scheduledDate);
+        if (existing) return existing;
+      }
+      if (active) {
+        // 手动搜索尚未结束时沿用该次运行，避免计划时间到达后再次搜索。
+        if (scheduledDate) scheduleActive.run(scheduledDate, active.id);
+        return { id: active.id };
+      }
       const { direction, fastMode } = settings.get();
-      if (!direction) return { error: '请先确认岗位方向' };
+      const error = direction ? null : '请先确认岗位方向';
+      if (error && !scheduledDate) return { error };
       const id = randomUUID();
+      // 关键：一次写入计划日期及运行状态，缺少配置也会留下可重跑的失败记录。
+      const { changes } = insert.run(id, error ? 'failed' : 'running', Number(fastMode), scheduledDate, error);
+      if (!changes) return findScheduled.get(scheduledDate);
+      if (error) return { id };
       const controller = new AbortController();
-      insert.run(id, 'running', Number(fastMode));
 
       // 快照确定后交给后台服务执行，响应与浏览器连接可以先结束。
       const promise = Promise.resolve().then(async () => {
