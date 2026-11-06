@@ -69,10 +69,10 @@ export function renderHome(jobs) {
 </section>`);
 }
 
-export function renderJob({ id, jd }, application) {
+export function renderJob({ id, jd }, application, interviewProgress = '') {
   const title = jobTitle(jd);
   const applicationContent = application
-    ? '<ul><li>已投递</li></ul>'
+    ? `<ul><li>已投递</li></ul>${interviewProgress}`
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
