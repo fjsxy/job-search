@@ -1,6 +1,5 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { fileURLToPath } from 'node:url';
 import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './http.mjs';
 import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
 import { createInterviewStore } from './interviews.mjs';
@@ -9,19 +8,18 @@ import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
 import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
 import { createSettings } from './settings.mjs';
-import { createSubscriptionClient } from './subscription.mjs';
+import { createSubscriptionClient, DEFAULT_DATA_DIR, subscriptionHome } from './subscription.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
 
 const HOST = '127.0.0.1';
-const DEFAULT_DATA_DIR = fileURLToPath(new URL('../.job-search-data/', import.meta.url));
 
 function loopbackUrl(port) {
   return new URL(`http://${HOST}:${port}`);
 }
 
 export async function startApp({
-  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, readOfficialPage,
-  subscription = createSubscriptionClient({ executable: codexExecutable }),
+  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, codexHome, readOfficialPage,
+  subscription = createSubscriptionClient({ executable: codexExecutable, codexHome: subscriptionHome(dataDir, codexHome) }),
 } = {}) {
   // 由本机进程持有数据库，浏览器关闭时不影响数据连接。
   const db = openDatabase(dataDir);
