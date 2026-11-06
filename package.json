@@ -1,0 +1,7 @@
+{
+  "name": "job-search",
+  "private": true,
+  "dependencies": {
+    "parse5": "8.1.0"
+  }
+}
