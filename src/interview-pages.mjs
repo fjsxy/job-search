@@ -1,4 +1,5 @@
 import { HttpError, readForm, redirect, sendHtml } from './http.mjs';
+import { handleReviewPost, renderInterviewReview } from './review-pages.mjs';
 import { escapeHtml, renderPage, renderPostForm } from './views.mjs';
 
 const ROUND_NAMES = ['一面', '二面', '三面', '四面', '五面', '六面', '七面', '八面', '九面', '十面'];
@@ -68,27 +69,40 @@ export function renderInterviewProgress(jobId, rounds) {
   ${renderPostForm(path, '新增轮次', roundFields())}`;
 }
 
-function renderInterviewRound(jobId, round) {
+function renderInterviewRound(jobId, round, reviews) {
   const jobPath = `/jobs/${jobId}`;
+  const roundPath = `${jobPath}/application/interviews/${round.id}`;
   const name = roundName(round.roundNumber);
   return renderPage(name, `
 <h1>${name}</h1>
 <p><a href="${escapeHtml(jobPath)}">返回投递详情</a></p>
 <section>
   <h2>编辑面试轮次</h2>
-  ${renderPostForm(`${jobPath}/application/interviews/${round.id}`, '保存轮次', roundFields(round))}
-</section>`);
+  ${renderPostForm(roundPath, '保存轮次', roundFields(round))}
+</section>
+${renderInterviewReview(roundPath, round.id, reviews)}`);
 }
 
-export async function handleInterviewRequest(request, response, path, jobs, interviews) {
-  const match = /^\/jobs\/([0-9a-f-]+)\/application\/interviews(?:\/([0-9a-f-]+))?$/.exec(path);
+export async function handleInterviewRequest(request, response, path, jobs, interviews, reviews) {
+  const match = /^\/jobs\/([0-9a-f-]+)\/application\/interviews(?:\/([0-9a-f-]+)(?:\/(transcript|review|review-directory))?)?$/.exec(path);
   if (!match) {
     return false;
   }
-  const [, jobId, roundId] = match;
+  const [, jobId, roundId, reviewAction] = match;
   const application = jobs.getApplication(jobId);
   if (!application) {
     throw new HttpError(404, '投递不存在');
+  }
+
+  if (reviewAction) {
+    if (request.method !== 'POST') return false;
+    // 关键：复盘与轮次编辑使用相同的投递归属校验。
+    if (!interviews.getRound(application.id, roundId)) {
+      throw new HttpError(404, '面试轮次不存在');
+    }
+    const roundPath = `/jobs/${jobId}/application/interviews/${roundId}`;
+    await handleReviewPost(request, response, roundPath, roundId, reviewAction, reviews);
+    return true;
   }
 
   if (request.method === 'GET' && roundId) {
@@ -96,7 +110,7 @@ export async function handleInterviewRequest(request, response, path, jobs, inte
     if (!round) {
       throw new HttpError(404, '面试轮次不存在');
     }
-    sendHtml(response, 200, renderInterviewRound(jobId, round));
+    sendHtml(response, 200, renderInterviewRound(jobId, round, reviews));
     return true;
   }
 

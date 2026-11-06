@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './http.mjs';
 import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
 import { createInterviewStore } from './interviews.mjs';
+import { createReviewRunner } from './reviews.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
 import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
@@ -24,11 +25,13 @@ export async function startApp({
   const db = openDatabase(dataDir);
   const server = createServer();
   let search;
+  let reviews;
 
   try {
     const jobs = createJobStore(db);
     const interviews = createInterviewStore(db);
     const settings = createSettings(db);
+    reviews = createReviewRunner({ db, settings, subscription });
     search = createSearchRunner({
       db, jobs, settings, discover: createOfficialDiscovery(subscription, readOfficialPage),
     });
@@ -38,7 +41,7 @@ export async function startApp({
         protectLocalRequest(request, response, loopbackUrl(request.socket.localPort));
         const path = request.url.split('?', 1)[0];
         if (!await searchRoutes(request, response, path)) {
-          await handleRequest(request, response, path, jobs, interviews);
+          await handleRequest(request, response, path, jobs, interviews, reviews);
         }
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
@@ -59,13 +62,14 @@ export async function startApp({
       await Promise.all([
         new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
         search.close(),
+        reviews.close(),
       ]);
       db.close();
     },
   };
 }
 
-async function handleRequest(request, response, path, jobs, interviews) {
+async function handleRequest(request, response, path, jobs, interviews, reviews) {
   if (request.method === 'GET' && path === '/') {
     sendHtml(response, 200, renderHome(jobs.listJobs()));
     return;
@@ -104,7 +108,7 @@ async function handleRequest(request, response, path, jobs, interviews) {
     }
   }
 
-  if (await handleInterviewRequest(request, response, path, jobs, interviews)) {
+  if (await handleInterviewRequest(request, response, path, jobs, interviews, reviews)) {
     return;
   }
 
