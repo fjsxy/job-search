@@ -10,6 +10,8 @@ const HANGZHOU_DISTRICTS = [
 ];
 const ALLOWED_DISTRICTS = new Set(['余杭区', '西湖区']);
 const CITY_NAMES = ['杭州', '上海', '北京', '深圳', '广州', '宁波', '南京', '苏州', '成都', '武汉', '南昌', '香港'];
+const locationSeparator = /\s*[·、/|,;]\s*/u;
+const missingLocation = /^(?:待确认|待确定|待定|未披露|未明确|未知|保密|不限|不详|全国|多地|远程|面议|同上)$/u;
 
 // 仅匹配招聘主体字段中的完整名称。各分组按集团自披露资料维护。
 const EMPLOYER_GROUPS = [
@@ -73,15 +75,24 @@ const normalize = text => text.normalize('NFKC').trim();
 const key = text => normalize(text).toLowerCase().replace(/\s+/gu, ' ');
 const unique = values => [...new Set(values.filter(Boolean))];
 
+// 招聘主体发布职位；有独立签约主体时，后者只参与雇主筛选。
+function employerNames(lines, label) {
+  return unique(lines.map(line => line.replace(label, '').trim()))
+    .filter(name => !/^(?:待确认|未披露|保密|未知|外包|代招|第三方)$/u.test(name)
+      && !/[(（](?:外包|代招|驻场)[)）]$/u.test(name));
+}
+
+export function namedRecruiters(metadata) {
+  return employerNames(metadata.filter(line => EMPLOYER_LABEL.test(line)), EMPLOYER_LABEL);
+}
+
 export function verifiedJobFacts(metadata, { city, district, salaryQuote } = {}) {
   // 签约主体明确时以劳动合同主体为准，避免把驻场客户当作雇主。
   const contractLines = metadata.filter(line => CONTRACT_LABEL.test(line));
   const recruiterLines = metadata.filter(line => EMPLOYER_LABEL.test(line));
   const employerLines = contractLines.length ? contractLines : recruiterLines;
   const employerLabel = contractLines.length ? CONTRACT_LABEL : EMPLOYER_LABEL;
-  const employers = unique(employerLines.map(line => line.replace(employerLabel, '').trim()))
-    .filter(name => !/^(?:待确认|未披露|保密|未知|外包|代招|第三方)$/u.test(name)
-      && !/[(（](?:外包|代招|驻场)[)）]$/u.test(name));
+  const employers = employerNames(employerLines, employerLabel);
   const contractGroups = metadata.filter(line => CONTRACT_GROUP_LABEL.test(line));
   const distinctContract = contractLines.length && recruiterLines.some(line =>
     !employers.some(employer => key(employer) === key(line.replace(EMPLOYER_LABEL, ''))));
@@ -95,7 +106,7 @@ export function verifiedJobFacts(metadata, { city, district, salaryQuote } = {})
     const address = key(line);
     if (district && address === key(district)) return true;
     if (!bareCity) return false;
-    const parts = address.split(/\s*[·、/|,]\s*/u).map(part => part.replace(/市$/u, ''));
+    const parts = address.split(locationSeparator).map(part => part.replace(/市$/u, ''));
     return parts.includes(bareCity) && parts.every(part => CITY_NAMES.includes(part) || part === bareCity)
       || Boolean(district && address === bareCity + key(district));
   });
@@ -110,39 +121,49 @@ export function verifiedJobFacts(metadata, { city, district, salaryQuote } = {})
   return { employers, groups, locations, salaries, employerEvidence: employers.length === 1 ? employerLines[0] : null };
 }
 
+function addressParts(value, explicitBase, cityNames) {
+  const address = value.replace(/^(?:[\p{Script=Han}]{2,8}?省\s*|浙江\s*(?=杭州))/u, '');
+  const initialDistrict = HANGZHOU_DISTRICTS.find(district => address.startsWith(district))
+    ?? (/^(?:余杭|西湖)$/u.test(address) ? `${address}区` : null);
+  if (initialDistrict) return { city: initialDistrict === '余杭区' ? '杭州' : null, district: initialDistrict };
+
+  // 只读取行政区划前缀，地址尾部的公司、学校和园区名称不参与城市判断。
+  const cityWithSuffix = /^([\p{Script=Han}]{2,8}?)市(?!场)/u.exec(address);
+  const knownCity = cityNames.find(city => {
+    if (!address.startsWith(city)) return false;
+    const suffix = address.slice(city.length);
+    if (!suffix || /^(?:市(?!场)|\s|余杭|西湖)/u.test(suffix)) return true;
+    const subdivision = /^[\p{Script=Han}]{1,8}?(?:区|县)(?!划)/u.exec(suffix)?.[0];
+    return subdivision && !/大学|学院|校区|园区|小区|社区|景区/u.test(subdivision);
+  });
+  const bareCity = explicitBase && /^[\p{Script=Han}]{2,8}$/u.test(address)
+    && !missingLocation.test(address) && !/[区县省]$/u.test(address) ? address : null;
+  const englishCity = /^hangzhou\b/u.exec(address);
+  const city = knownCity ?? cityWithSuffix?.[1] ?? (englishCity ? '杭州' : bareCity);
+  const remainder = address.slice((englishCity?.[0] ?? city ?? '').length).replace(/^市?\s*/u, '');
+  const district = HANGZHOU_DISTRICTS.find(name => remainder.startsWith(name))
+    ?? (/^(?:余杭$|yuhang\b)/u.test(remainder) ? '余杭区' : null)
+    ?? (/^(?:西湖$|xihu\b)/u.test(remainder) ? '西湖区' : null);
+  return { city: city ?? (district === '余杭区' ? '杭州' : null), district };
+}
+
 function checkLocation(job, pending, excluded) {
   const locationLines = job.facts?.locations ?? unique([job.cityEvidence, job.districtEvidence, job.city]);
   const baseCities = new Set();
   const officeCities = new Set();
   const districts = new Set();
-  // 多个来源可提供不同的已核对城市；纳入每个来源的候选城市用于解析其地点原文。
-  const extraCities = (job.observedCities ?? [job.city]).filter(Boolean)
-    .map(city => key(city).replace(/市$/u, '')).filter(city => /^[\p{Script=Han}]{2,8}$/u.test(city));
-  const cityNames = [...new Set([...CITY_NAMES, ...extraCities])];
+  const observedCities = (job.observedCities ?? [job.city]).filter(Boolean)
+    .map(city => key(city).replace(/市$/u, ''))
+    .filter(city => /^[\p{Script=Han}]{2,8}$/u.test(city) && !missingLocation.test(city));
+  const cityNames = [...CITY_NAMES, ...observedCities];
   const hasBase = locationLines.some(line => BASE_LABEL.test(line));
   for (const line of locationLines) {
     const explicitBase = BASE_LABEL.test(line);
-    const address = key(line.replace(LOCATION_LABEL, ''));
-    const identified = HANGZHOU_DISTRICTS.filter(district => address.includes(district));
-    const cities = cityNames.filter(city => address.includes(city));
-    if (/\bhangzhou\b/u.test(address)) cities.push('杭州');
-    if (!cities.length) {
-      // 市名可独立出现，也可写在区县前。同名区县本身不能证明办公城市。
-      const beforeDistrict = identified.length ? address.slice(0, address.indexOf(identified[0])) : '';
-      const cityPrefix = beforeDistrict.replace(/^浙江省?\s*/u, '').trim();
-      const city = /^(?:[\p{Script=Han}]{2,8}省\s*)?([\p{Script=Han}]{2,8}?)市/u.exec(address)?.[1]
-        ?? (/^[\p{Script=Han}]{2,8}$/u.test(cityPrefix) ? cityPrefix : null);
-      if (city) cities.push(city);
-      else if (identified.includes('余杭区')) cities.push('杭州');
+    for (const part of key(line.replace(LOCATION_LABEL, '')).split(locationSeparator)) {
+      const { city, district } = addressParts(part, explicitBase, cityNames);
+      if (city) (explicitBase ? baseCities : officeCities).add(city);
+      if (district && !explicitBase) districts.add(district);
     }
-    if (explicitBase) {
-      for (const city of cities) baseCities.add(city);
-      continue;
-    }
-    for (const city of cities) officeCities.add(city);
-    for (const district of identified) districts.add(district);
-    if (/\byuhang\b/u.test(address) || /^(?:浙江)?杭州市?\s*余杭$/u.test(address)) districts.add('余杭区');
-    if (/\bxihu\b/u.test(address) || /^(?:浙江)?杭州市?\s*西湖$/u.test(address)) districts.add('西湖区');
   }
   // 有明确 Base 时以该字段为准，旧 JD 只写地点时仍可从办公城市推断。
   const cities = hasBase ? baseCities : officeCities;
@@ -153,7 +174,7 @@ function checkLocation(job, pending, excluded) {
   if (officeCities.size > 1 || districts.size > 1) pending.push('办公地点信息有冲突，待确认');
   else if ((officeCities.size && !officeCities.has('杭州'))
     || (districts.size && !ALLOWED_DISTRICTS.has([...districts][0]))) excluded.push('办公地点不在余杭区或西湖区');
-  else if (!districts.size) pending.push('办公地点待确认');
+  else if (!districts.size || !officeCities.size) pending.push('办公地点待确认');
 }
 
 function parseSalary(line) {

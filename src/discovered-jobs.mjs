@@ -25,8 +25,7 @@ function reconcileScreening(display, rows) {
     };
     for (const name of Object.keys(facts)) facts[name].push(...sourceFacts[name].filter(Boolean));
   }
-  const observedCities = observations.map(job => job.city);
-  const hard = screenHardConditions({ ...display, facts, observedCities });
+  const hard = screenHardConditions({ ...display, facts, observedCities: observations.map(job => job.city) });
   const conflicts = hard.pending.flatMap(message => {
     const label = /^(招聘主体|Base|办公地点|月薪)\s*信息有冲突/u.exec(message)?.[1];
     return label ? [label] : [];
@@ -68,13 +67,21 @@ export function createDiscoveryStore(db) {
     );
   `);
 
-  // 旧官网记录尚未核对发布方，仍保留原文和历史，但不得再作为跨源归并凭据。
+  // 旧观察索引曾使用签约雇主或较宽松的官网证据。保留历史，复查来源后再建立索引。
   db.exec(`
-    UPDATE job_observations SET publisher_key = NULL, owned_url_key = NULL
-    WHERE (publisher_key IS NOT NULL OR owned_url_key IS NOT NULL)
-      AND json_extract(details, '$.source.kind') = 'official'
-      AND json_extract(details, '$.source.officialPublisher') IS NULL
+    UPDATE job_observations SET publisher_key = NULL, owned_url_key = NULL, cited_url_key = NULL
+    WHERE (publisher_key IS NOT NULL OR owned_url_key IS NOT NULL OR cited_url_key IS NOT NULL)
+      AND json_type(details, '$.source.publisherRecruiter') IS NULL
   `);
+  // 手动原文仍可重新提取招聘主体；之前因身份冲突而禁用的索引继续禁用。
+  const staleManual = db.prepare(`
+    SELECT rowid, jd FROM manual_jds WHERE json_array_length(publisher_key) = 2 OR owned_url_key LIKE '[%'
+  `).all();
+  const reindexManual = db.prepare('UPDATE manual_jds SET publisher_key = ?, owned_url_key = ? WHERE rowid = ?');
+  for (const { rowid, jd } of staleManual) {
+    const { publisher, owned } = manualIdentity(jd);
+    reindexManual.run(publisher, owned, rowid);
+  }
 
   const saveObservation = db.prepare(`
     INSERT INTO job_observations (job_id, source_key, publisher_key, owned_url_key, cited_url_key, jd, details, urls)

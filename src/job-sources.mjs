@@ -1,4 +1,4 @@
-import { verifiedJobFacts } from './job-criteria.mjs';
+import { namedRecruiters } from './job-criteria.mjs';
 import { publicUrl } from './public-page.mjs';
 
 // 来源 ID 会持久化在搜索结果和职位记录中，标签供浏览器页面使用。
@@ -51,12 +51,8 @@ function comparisonUrl(value, kind) {
   return url.href;
 }
 
-function employerKey(value) {
-  return value?.normalize('NFKC').trim();
-}
-
-function officialIdentity(employer, value) {
-  return employer && value ? JSON.stringify([employer, comparisonUrl(value, 'official')]) : null;
+function publisherIdentity(recruiter, id) {
+  return recruiter && id ? JSON.stringify(['recruiter', recruiter.normalize('NFKC').trim().toLowerCase(), id]) : null;
 }
 
 export function manualIdentity(jd) {
@@ -69,30 +65,30 @@ export function manualIdentity(jd) {
     const values = [...new Set(lines.filter(line => pattern.test(line)).map(line => line.replace(pattern, '').trim()))];
     return values.length === 1 && values[0] ? values[0] : null;
   };
-  const employers = verifiedJobFacts(lines).employers;
-  const employer = employers.length === 1 ? employers[0] : null;
+  const recruiters = namedRecruiters(lines);
+  const recruiter = recruiters.length === 1 ? recruiters[0] : null;
   const id = oneValue(/^(?:招聘编号|招聘方(?:职位|岗位)编号)\s*:\s*/u);
   const url = publicUrl(oneValue(/^(?:JD 来源|公司社招官网|官网职位|官网原文|官方职位链接)\s*:\s*/iu));
-  if (employer && /^[a-z0-9_-]{1,100}$/i.test(id ?? '')) {
-    return { publisher: JSON.stringify([employer, id]), owned: null };
-  }
-  return { publisher: null, owned: url && belongsToSource('official', url) ? officialIdentity(employer, url.href) : null };
+  const publisher = /^[a-z0-9_-]{1,100}$/i.test(id ?? '') ? publisherIdentity(recruiter, id) : null;
+  return { publisher, owned: !publisher && url && belongsToSource('official', url) ? comparisonUrl(url, 'official') : null };
 }
 
 export function observationKeys(job) {
-  const { kind, url, jobKey, locator, publisherJobKey, officialPosition, citedOfficialUrl, ambiguousTitle, officialPublisher } = job.source;
+  const { kind, url, jobKey, locator, publisherJobKey, publisherRecruiter,
+    officialPosition, citedOfficialUrl, ambiguousTitle, officialPublisherDomain } = job.source;
   const normalized = comparisonUrl(url, kind);
   const link = new URL(normalized);
   const dedicated = kind === 'boss' || (kind === 'maimai' && link.pathname === '/jobs/job_detail');
-  const employer = employerKey(job.employer);
-  const verifiedPublisher = kind !== 'official' || Boolean(officialPublisher);
+  const verifiedPublisher = kind !== 'official' || Boolean(officialPublisherDomain);
+  const currentIdentity = Object.hasOwn(job.source, 'publisherRecruiter');
   // 官网与招聘帖可能在一个 URL 放多条 JD。按确实有证据的职位定位区分。
   const scope = dedicated ? [] : [locator, ambiguousTitle ? jobKey : null];
   return {
     source: JSON.stringify([kind, normalized, ...scope]),
-    publisher: verifiedPublisher && employer && publisherJobKey ? JSON.stringify([employer, publisherJobKey]) : null,
-    owned: verifiedPublisher && officialPosition ? officialIdentity(employer, url) : null,
-    cited: officialIdentity(employer, citedOfficialUrl),
+    publisher: verifiedPublisher ? publisherIdentity(publisherRecruiter, publisherJobKey) : null,
+    // 正文明示引用可以关联已经核实的单职位官网详情，不依赖筛选用签约主体。
+    owned: officialPublisherDomain && officialPosition ? comparisonUrl(url, 'official') : null,
+    cited: currentIdentity && citedOfficialUrl ? comparisonUrl(citedOfficialUrl, 'official') : null,
   };
 }
 

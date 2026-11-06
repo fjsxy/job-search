@@ -105,7 +105,7 @@ test('JS-04-02 官网原文进入统一职位视图，摘要及无法佐证的�
   const summaryUrl = 'https://careers.example.org/positions/infra';
   const unverifiableUrl = 'https://careers.example.org/positions/gateway';
   const candidate = {
-    url, title: '平台工程师', employer: '合成公司', city: '杭州', district: '余杭区',
+    url, title: '平台工程师', employer: 'Example 合成公司', city: '杭州', district: '余杭区',
     salaryQuote: '人民币 35k–50k/月', jobKey: 'cloud',
     duties: ['维护杭州生产 Kubernetes 集群'],
     requirements: ['精通 Go 与容器调度'],
@@ -121,9 +121,9 @@ test('JS-04-02 官网原文进入统一职位视图，摘要及无法佐证的�
   } });
   const pageFor = async (link) => {
     if (link === summaryUrl) return '<title>摘要岗位</title><p>只有职位摘要</p><a href="/login">登录</a>';
-    return `<title>Example · 合成公司官网招聘</title><header><a href="/"><img alt="合成公司"></a></header><main><article>
+    return `<title>Example 合成公司官网招聘</title><header><a href="/"><img alt="Example 合成公司"></a></header><main><article>
       <h1>${link === url ? '平台工程师' : '无可佐证正文'}</h1>
-      <p>招聘主体：合成公司</p><p>办公地点：杭州余杭区</p><p>薪资：人民币 35k–50k/月</p>
+      <p>招聘主体：Example 合成公司</p><p>办公地点：杭州余杭区</p><p>薪资：人民币 35k–50k/月</p>
       <h2>岗位职责</h2><ul><li>维护杭州生产 Kubernetes 集群</li><li>完善跨集群网络的演练流程</li></ul>
       <h2>任职要求</h2><ul><li>精通 Go 与容器调度</li><li>能为生产故障组织跨团队排查</li></ul>
     </article></main>`;

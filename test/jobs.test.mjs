@@ -302,3 +302,14 @@ test('两份手动 JD 按唯一招聘编号合并，原文和投递轮次均保�
   const anonymous = await submit(origin, '/jobs', { jd: update.replace('招聘编号：JOB-1\n', '') });
   assert.notEqual(anonymous.headers.get('location'), path);
 });
+
+test('JS-07-07 手动 JD 只按发布招聘主体的明确编号合并', async t => {
+  const origin = await openApp(t);
+  const jd = '平台工程师\n招聘主体：甲科技\n签约主体：合成外包公司\n招聘编号：123\n职责：维护生产集群';
+  const add = async text => (await submit(origin, '/jobs', { jd: text })).headers.get('location');
+  const first = await add(jd);
+  assert.notEqual(await add(jd.replace('甲科技', '乙科技')), first);
+  assert.equal(await add(jd.replace('合成外包公司', '更新后的签约公司')), first);
+  const unnamed = jd.replace('招聘主体：甲科技\n', '');
+  assert.notEqual(await add(unnamed), await add(unnamed));
+});

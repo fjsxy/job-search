@@ -184,7 +184,7 @@ test('09:30 遇到手动搜索正在运行时，共用该次搜索满足当日�
   assert.equal(app.calls.length, 3);
 });
 
-const EMPLOYER = '杭州合成科技有限公司';
+const EMPLOYER = 'Example 杭州合成科技有限公司';
 const DUTY = '维护生产 Kubernetes 集群';
 const REQUIREMENT = '掌握 Go 与 Linux';
 const TECHNICAL = '维护生产 Kubernetes 集群，掌握 Go 与 Linux';
@@ -237,7 +237,7 @@ test('JS-08-03 定时搜索与同时触发的手动搜索共用任务，失败�
     },
     readPage: async url => {
       const job = Object.values(CANDIDATES).find(candidate => candidate.url === url);
-      return `<title>Example · ${EMPLOYER} 招聘</title><header><a href="/"><img alt="${EMPLOYER}"></a></header><article><h1>${job.title}</h1>
+      return `<title>${EMPLOYER} 招聘</title><header><a href="/"><img alt="${EMPLOYER}"></a></header><article><h1>${job.title}</h1>
         <p>招聘主体：${EMPLOYER}</p><p>办公地点：杭州余杭区</p><p>月薪：${job.salaryQuote}</p>
         <p>招聘编号：${job.jobKey}</p><h2>岗位职责</h2><p>${DUTY}</p><h2>任职要求</h2><p>${REQUIREMENT}</p></article>`;
     },

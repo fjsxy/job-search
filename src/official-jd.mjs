@@ -1,5 +1,5 @@
-import { parse } from 'parse5';
-import { verifiedJobFacts } from './job-criteria.mjs';
+import { defaultTreeAdapter, parse } from 'parse5';
+import { namedRecruiters, verifiedJobFacts } from './job-criteria.mjs';
 import { officialPublisher } from './official-publisher.mjs';
 import { belongsToSource } from './job-sources.mjs';
 import { publicUrl, readPublicPage } from './public-page.mjs';
@@ -24,6 +24,33 @@ function hidden(node) {
   return node.attrs?.some(({ name, value }) => name === 'hidden' || (name === 'aria-hidden' && value === 'true'));
 }
 
+function parsePublicHtml(html) {
+  // 关键：HTML 解析也会遍历开放元素栈，必须在构建 DOM 时限制深度。
+  const exceeded = new Error('公开页面结构超限');
+  let depth = 0;
+  let elements = 0;
+  try {
+    return parse(html, { treeAdapter: {
+      ...defaultTreeAdapter,
+      createElement(...args) {
+        if (++elements > 50_000) throw exceeded;
+        return defaultTreeAdapter.createElement(...args);
+      },
+      onItemPush() { if (++depth > 256) throw exceeded; },
+      onItemPop() { depth--; },
+    } });
+  } catch (error) {
+    if (error === exceeded) return null;
+    throw error;
+  }
+}
+
+function spend(budget, node) {
+  // 文本也计入预算，避免反复归一化同一段很长的文本。
+  budget.remaining -= node.nodeName === '#text' ? 1 + Math.ceil(node.value.length / 64) : 1;
+  return budget.remaining >= 0;
+}
+
 function flatten(root, budget) {
   const lines = [];
   let line = '';
@@ -37,8 +64,8 @@ function flatten(root, budget) {
   // 按块级节点保留原文行，忽略脚本、导航和模板中的字符串。
   const queue = [{ node: root }];
   while (queue.length) {
-    if (budget && --budget.remaining < 0) return null;
     const { node, end } = queue.pop();
+    if (!spend(budget, node)) return null;
     if (skipped.has(node.tagName) || hidden(node)) continue;
     if (end || node.tagName === 'br') {
       flush(node.tagName);
@@ -87,20 +114,24 @@ function includesOriginal(lines, items) {
     typeof item === 'string' && comparable(item).length >= 4 && observed.some(line => line.includes(comparable(item))));
 }
 
-function findPosition(document, candidate) {
+function findPosition(document, candidate, budget) {
   const title = normalize(candidate.title);
   const nodes = [document];
   const headings = [];
   while (nodes.length) {
     const node = nodes.pop();
+    if (!spend(budget, node)) return null;
     if (skipped.has(node.tagName) || hidden(node)) continue;
-    if (heading.test(node.tagName) && normalize(flatten(node).map(line => line.text).join(' ')) === title) headings.push(node);
+    if (heading.test(node.tagName)) {
+      const lines = flatten(node, budget);
+      if (!lines) return null;
+      if (normalize(lines.map(line => line.text).join(' ')) === title) headings.push(node);
+    }
     for (const child of node.childNodes ?? []) nodes.push(child);
   }
   const ambiguousTitle = headings.length > 1;
   const visited = new Set();
   // 共享祖先只扫描一次。不同祖先深度重叠时也有总扫描预算，超限保留待核验。
-  const budget = { remaining: 200_000 };
   for (const node of headings) {
     // 从标题往上找能覆盖职责和要求的最小容器；同页同名职位须有独立的招聘编号。
     let parent = node.parentNode;
@@ -133,6 +164,17 @@ function citedId(value, url, lines) {
   return lines.some(line => idLabel.test(line) && line.replace(idLabel, '') === value) ? value : null;
 }
 
+function isAccessWall(branding, lines) {
+  // 只识别阻止读取职位的提示。投递进度、账号等功能的登录说明不算验证墙。
+  const wall = /^(?:请(?:先)?完成(?:安全|人机)验证|安全验证|访问受限|访问异常|验证后继续|无权访问|access denied\b|verify (?:that )?you are human\b|checking your browser\b)/iu;
+  const jdLogin = /^(?:请(?:先)?登录(?:后)?|登录后(?:方可|才能|才可)?|请登录以)\s*(?:查看|访问|阅读)\s*(?:完整|全部)?(?:该|本)?(?:职位|岗位|招聘)(?:详情|描述|信息|正文|$)/u;
+  const loginPage = /^(?:(?:请先)?登录|log in|login|sign in)\s*(?:$|[|·–—-])/iu.test(branding);
+  const browserChallenge = /^just a moment\b/iu.test(branding)
+    && lines.some(line => /^(?:please )?enable javascript and cookies to continue\b/iu.test(line));
+  return !lines.length || loginPage || browserChallenge
+    || [branding, ...lines].some(line => wall.test(line) || jdLogin.test(line));
+}
+
 export function createOfficialVerifier(readPage = readPublicPage) {
   return async (candidate, webEvidence, signal, kind) => {
     const link = publicUrl(candidate?.url);
@@ -151,24 +193,26 @@ export function createOfficialVerifier(readPage = readPublicPage) {
     const html = await readPage(url, signal);
     if (!html) return { lead, restricted: opened || kind !== 'official' };
 
-    const document = parse(html);
+    const document = parsePublicHtml(html);
+    if (!document) return { lead };
     const head = document.childNodes.find(node => node.tagName === 'html')?.childNodes.find(node => node.tagName === 'head');
     const branding = head?.childNodes.find(node => node.tagName === 'title')?.childNodes[0]?.value?.trim() ?? '';
-    const wholePage = flatten(document);
+    const budget = { remaining: 200_000 };
+    const wholePage = flatten(document, budget);
+    if (!wholePage) return { lead };
     const visible = wholePage.map(line => line.text);
-    const job = opened && hasOriginal && findPosition(document, candidate);
-    if (!job) {
-      // 没有正文时，根据原站明确提示判为受限。普通登录入口和公开摘要仍可查看。
-      const wall = /安全验证|访问受限|访问异常|请先登录|登录后(?:方可)?查看|验证后继续|无权访问|access denied|verify (?:that )?you are human|checking your browser/iu;
-      return { lead, restricted: !visible.length || wall.test(branding) || visible.some(line => wall.test(line)) };
-    }
+    const job = opened && hasOriginal && findPosition(document, candidate, budget);
+    if (!job) return { lead, restricted: isAccessWall(branding, visible) };
+
     const metadata = job.metadata.map(line => line.text);
+    const recruiters = namedRecruiters(metadata);
     const { employerEvidence, ...facts } = verifiedJobFacts(job.scope.slice(1).map(line => line.text), candidate);
     const publisher = kind === 'official'
-      ? officialPublisher({ document, link, branding, lines: visible, metadata, employers: facts.employers })
+      ? officialPublisher({ document, link, branding, lines: visible, recruiters })
       : null;
     if (kind === 'official' && !publisher) return { lead };
-    source.officialPublisher = publisher ?? undefined;
+    source.officialPublisherDomain = publisher ?? undefined;
+    source.publisherRecruiter = recruiters.length === 1 ? recruiters[0] : null;
     const cityEvidence = citedLine(candidate.city, facts.locations);
     const districtEvidence = citedLine(candidate.district, facts.locations);
     const salaryEvidence = citedLine(candidate.salaryQuote, facts.salaries);

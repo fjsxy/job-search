@@ -118,12 +118,13 @@ const REQUIREMENT = '熟悉 Kubernetes 调度与生产故障处置';
 
 function officialFixtures(jobs) {
   const officialCandidates = jobs.map(({ title, city = '杭州', district = '余杭区', salaryQuote = '人民币 35k–55k/月',
-    employer = '合成公司', lead = false }, index) => ({
-    title, city, district, salaryQuote, employer, url: `https://careers.example.org/${index}`, jobKey: String(index),
+    employer = '合成公司', brand = employer, lead = false }, index) => ({
+    title, city, district, salaryQuote, employer,
+    url: new URL(`https://careers.${brand}.org/${index}`).href, jobKey: String(index),
     duties: lead ? [] : [DUTY], requirements: lead ? [] : [REQUIREMENT],
   }));
   const officialPages = Object.fromEntries(officialCandidates.map((job, index) => [
-    job.url, `<title>Example · ${job.employer} 招聘</title><header><a href="/"><img alt="${job.employer}"></a></header><main><article><h1>${job.title}</h1>
+    job.url, `<title>${job.employer} 招聘</title><header><a href="/"><img alt="${job.employer}"></a></header><main><article><h1>${job.title}</h1>
       <p>招聘主体：${job.employer}</p><p>办公地点：${jobs[index].office ?? job.city + (job.district ?? '')}</p>
       ${job.salaryQuote ? `<p>薪资：${job.salaryQuote}</p>` : ''}
       ${jobs[index].extra ?? ''}
@@ -166,9 +167,9 @@ test('JS-05-02 排除已知不符合的 Base、办公区县和薪资，保留办
 test('JS-05-02 按可核实的招聘主体归属筛选，外包岗位按实际签约主体判断', async t => {
   const app = await start(t, officialFixtures([
     { title: '阿里主体岗位', employer: '阿里巴巴' },
-    { title: '字节主体岗位', employer: '北京字节跳动科技有限公司' },
+    { title: '字节主体岗位', employer: '北京字节跳动科技有限公司', brand: '字节跳动' },
     { title: '集团子公司岗位', employer: '合成子公司', extra: '<p>招聘主体归属：字节跳动</p>' },
-    { title: '蚂蚁例外岗位', employer: '蚂蚁科技集团股份有限公司', extra: '<p>招聘主体归属：阿里巴巴</p>' },
+    { title: '蚂蚁例外岗位', employer: '蚂蚁科技集团股份有限公司', brand: '蚂蚁科技', extra: '<p>招聘主体归属：阿里巴巴</p>' },
     { title: '菜鸟例外岗位', employer: '菜鸟网络', extra: '<p>招聘主体归属：阿里巴巴</p>' },
     { title: '外包签约岗位', employer: '字节跳动', extra: '<p>签约主体：合成外包公司</p><p>驻场客户：字节跳动</p>' },
   ]));
@@ -301,4 +302,22 @@ test('明确 Base 和实际办公区县独立筛选，Base 中的区县不能代
   assert.doesNotMatch(page, /上海 Base 杭州办公|杭州 Base 上海办公|杭州 Base 南昌西湖办公/);
   const detail = await app.page(jobLink(page, '杭州 Base 余杭办公'));
   assert.doesNotMatch(detail, /办公地点信息有冲突|办公地点待确认|Base 信息有冲突/);
+});
+
+test('JS-05-05 Base 直接读取原文，办公地址只按行政区划前缀判断', async t => {
+  const app = await start(t, officialFixtures([
+    { title: '合肥 Base 杭州办公', city: null, office: '杭州余杭区', extra: '<p>Base：合肥</p>' },
+    { title: '北航杭州校区办公', office: '杭州市余杭区，北京航空航天大学校区' },
+    { title: '西湖办公城市不明', office: '西湖区', extra: '<p>Base：杭州</p>' },
+    { title: '余杭办公城市明确', office: '余杭区', extra: '<p>Base：杭州</p>' },
+    { title: '两处办公地址', office: '杭州市余杭区 / 合肥市蜀山区', extra: '<p>Base：杭州</p>' },
+  ]));
+  const page = await runSearch(app);
+  assert.doesNotMatch(page, /合肥 Base 杭州办公/);
+  for (const title of ['北航杭州校区办公', '余杭办公城市明确']) {
+    const detail = await app.page(jobLink(page, title));
+    assert.doesNotMatch(detail, /办公地点信息有冲突|办公地点待确认|Base 信息有冲突/);
+  }
+  assert.match(await app.page(jobLink(page, '西湖办公城市不明')), /办公地点待确认/);
+  assert.match(await app.page(jobLink(page, '两处办公地址')), /办公地点信息有冲突，待确认/);
 });
