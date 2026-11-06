@@ -2,6 +2,8 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './http.mjs';
+import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
+import { createInterviewStore } from './interviews.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
 
@@ -20,10 +22,11 @@ export async function startApp({ dataDir = DEFAULT_DATA_DIR, port = 3000 } = {})
 
   try {
     const jobs = createJobStore(db);
+    const interviews = createInterviewStore(db);
     server.on('request', async (request, response) => {
       try {
         protectLocalRequest(request, response, loopbackUrl(request.socket.localPort));
-        await handleRequest(request, response, jobs);
+        await handleRequest(request, response, jobs, interviews);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
         const message = status === 500 ? '本机服务处理失败，请重试' : error.message;
@@ -45,7 +48,7 @@ export async function startApp({ dataDir = DEFAULT_DATA_DIR, port = 3000 } = {})
   };
 }
 
-async function handleRequest(request, response, jobs) {
+async function handleRequest(request, response, jobs, interviews) {
   const path = request.url.split('?', 1)[0];
   if (request.method === 'GET' && path === '/') {
     sendHtml(response, 200, renderHome(jobs.listJobs()));
@@ -68,7 +71,9 @@ async function handleRequest(request, response, jobs) {
   if (request.method === 'GET' && jobPath) {
     const job = jobs.getJob(jobPath[1]);
     if (job) {
-      sendHtml(response, 200, renderJob(job, jobs.getApplication(job.id)));
+      const application = jobs.getApplication(job.id);
+      const interviewProgress = application && renderInterviewProgress(job.id, interviews.listRounds(application.id));
+      sendHtml(response, 200, renderJob(job, application, interviewProgress));
       return;
     }
   }
@@ -81,6 +86,10 @@ async function handleRequest(request, response, jobs) {
       redirect(response, `/jobs/${job.id}`);
       return;
     }
+  }
+
+  if (await handleInterviewRequest(request, response, path, jobs, interviews)) {
+    return;
   }
 
   throw new HttpError(404, '页面不存在');
