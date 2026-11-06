@@ -183,7 +183,7 @@ test('官网原文链接只合并可核实的单职位详情，跨源字段分�
   const original = url => `<p>官网职位：<a href="${url}">查看原文</a></p>`;
   const pages = new Map([
     [official, html(companyJob)],
-    [maimai, html(platformJob, { extra: original(official) })],
+    [maimai, html(platformJob, { extra: original(`${official}?utm_source=board`) })],
     [listUrl, html(listing)],
     [boss, html(other, { extra: original(listUrl) })],
   ]);
@@ -255,6 +255,12 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
   const hosted = candidate('https://developernews.org/jobs/another', '其他域名的同品牌职位');
   const shared = candidate('https://hrcopies.github.io/jobs/PL-101', '共享托管域仿冒职位', { employer: 'HRcopies 科技' });
   const brandedBoard = candidate('https://aggregator.com/jobs/123', '聚合站带招聘方名称');
+  const hostedByGoogle = candidate('https://sites.google.com/view/copied/jobs/123', '自助建站伪造的职位', { employer: 'Google' });
+  const nestedHost = candidate('https://careers.other.example.org/jobs/123', '任意子域伪造的职位');
+  const copiedBrand = candidate(new URL('https://未来.com/jobs/123').href, '中文域名后缀仿冒职位', { employer: '某新未来集团' });
+  const genericBrand = candidate(new URL('https://科技.com/jobs/123').href, '通用中文域名仿冒职位', { employer: '星河科技集团' });
+  const copiedLogo = candidate(new URL('https://www.未来.com/jobs/123').href, '中文站标后缀仿冒职位', { employer: '某新未来集团' });
+  const weakBrands = [hostedByGoogle, nestedHost, copiedBrand, genericBrand, copiedLogo];
   const chinese = candidate(new URL('https://careers.合成科技.com.cn/jobs/PL-102').href, '中文招聘站职位', {
     employer: '杭州合成科技有限公司',
   });
@@ -270,6 +276,9 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
     [hosted.url, html(hosted, { id: 'PL-101' })],
     [shared.url, html(shared, { id: 'PL-101' })],
     [brandedBoard.url, html(brandedBoard, { id: 'PL-101', siteLogo: false }).replace('<title>', '<title>Aggregator · ')],
+    ...weakBrands.filter(job => job !== copiedLogo).map(job => [job.url, html(job, { id: 'PL-101' })]),
+    [copiedLogo.url, html(copiedLogo).replace('<title>某新未来集团 招聘</title>', '<title>未来招聘</title>')
+      .replace('<p>招聘主体：某新未来集团</p>', '')],
     [chinese.url, html(chinese, { siteLogo: false }).replace(/<title>.*?<\/title>/,
       '<title>合成科技社会招聘</title><header><a href="/"><img alt="合成科技"></a></header>')],
     [tokenFab.url, html(tokenFab).replace('<title>null 招聘</title>', '<title>TokenFab 招聘</title>')
@@ -277,14 +286,19 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
     [board.url, html(board, { id: 'PL-101' })],
   ]));
   const { page } = await run();
-  const [verified, leads] = page.split('<h2>待核验职位</h2>');
-  assert.match(verified, /脉脉原帖/);
-  const detail = await get(jobLinks(verified, '脉脉原帖')[0]);
-  for (const { title, url } of [repost, publisher, anonymous, hosted, shared, brandedBoard]) {
-    assert.ok(!verified.includes(title));
-    assert.ok(leads.includes(title));
-    assert.ok(!detail.includes(url));
-  }
+  const assertLeads = async (page, jobs) => {
+    const [verified, leads] = page.split('<h2>待核验职位</h2>');
+    assert.match(verified, /脉脉原帖/);
+    const detail = await get(jobLinks(verified, '脉脉原帖')[0]);
+    for (const { title, url } of jobs) {
+      assert.ok(!verified.includes(title), `${title}不应成为已核实 JD`);
+      assert.ok(leads.includes(title), `${title}应保留为待核验`);
+      assert.ok(!detail.includes(url), `${title}不应与脉脉原帖合并`);
+    }
+  };
+  await assertLeads(page, [repost, publisher, anonymous, hosted, shared, brandedBoard]);
+  responses.公司社招官网 = result(weakBrands);
+  await assertLeads((await run()).page, weakBrands);
   responses.公司社招官网 = result([chinese, tokenFab]);
   const trusted = (await run()).page.split('<h2>待核验职位</h2>')[0];
   assert.match(trusted, /中文招聘站职位/);
@@ -296,15 +310,17 @@ test('JS-07-06 本机读到的 HTTP 200 验证墙也标为来源受限，普通�
   const readable = candidate('https://careers.example.org/jobs/other', '公开职位');
   const summary = candidate(boss, '只有摘要的职位', { duties: [], requirements: [] });
   const challenge = candidate(maimai, '英文验证墙职位', { duties: [], requirements: [] });
-  const { run } = await fixture(t, {
+  const replies = {
     公司社招官网: result([blocked, readable], { unreadable: [blocked.url] }),
     脉脉: result([challenge], { unreadable: [challenge.url] }), 'BOSS 直聘': result([summary]),
-  }, new Map([
-    [blocked.url, '<title>安全验证</title><main><p>访问受限，请完成安全验证</p></main>'],
+  };
+  const pages = new Map([
+    [blocked.url, '<title>官网职位</title><main><p>请先登录，查看职位详情</p></main>'],
     [readable.url, html(readable, { extra: '<p><a href="/login">登录</a></p>' })],
     [summary.url, '<title>只有摘要的职位</title><main><p>仅展示普通摘要</p></main><footer>登录后查看投递进度</footer>'],
-    [challenge.url, '<title>Just a moment...</title><main><p>Enable JavaScript and cookies to continue</p></main>'],
-  ]));
+    [challenge.url, '<title>Human verification</title><main><p>Please verify that you are human</p></main>'],
+  ]);
+  const { run } = await fixture(t, replies, pages);
   const { page } = await run();
   assert.match(page, /公司社招官网 · 未完成（访问受限）/);
   assert.match(page, /脉脉 · 未完成（访问受限）/);
@@ -312,6 +328,12 @@ test('JS-07-06 本机读到的 HTTP 200 验证墙也标为来源受限，普通�
   const [verified, leads] = page.split('<h2>待核验职位</h2>');
   assert.match(verified, /公开职位/);
   assert.match(leads, /官网受限职位[\s\S]*只有摘要的职位/);
+
+  pages.set(challenge.url, '<title>Just a moment...</title><main><p>Enable JavaScript and cookies to continue</p></main>');
+  pages.set(summary.url, '<title>Job details</title><main><p>Please, sign in to view the full job description.</p></main>');
+  const retry = await run();
+  assert.match(retry.page, /脉脉 · 未完成（访问受限）/);
+  assert.match(retry.page, /BOSS 直聘 · 未完成（访问受限）/);
 });
 
 test('仅另一来源读取到同一 JD 时刷新简历匹配，不标为 JD 更新', async t => {
@@ -370,12 +392,13 @@ test('JS-07-07 不同招聘方的同号公开职位分别保留，同一招聘�
   const distinct = candidate(boss, '乙方招聘的职位', { employer: '乙科技' });
   const unnamed = candidate('https://www.zhipin.com/job_detail/unnamed.html', '招聘主体未知的职位');
   const contract = '<p>签约主体：合成外包公司</p>';
-  const pageFor = job => html(job, { id: '123', extra: contract });
-  const { run, get } = await fixture(t, {
+  const citation = `<p>官网职位：<a href="${official}?utm_source=board">查看原文</a></p>`;
+  const pageFor = (job, extra = '') => html(job, { id: '123', extra: contract + extra });
+  const { run, get, post } = await fixture(t, {
     公司社招官网: result([first]), 脉脉: result([same]), 'BOSS 直聘': result([distinct, unnamed]),
   }, new Map([
-    [first.url, pageFor(first)], [same.url, pageFor(same)], [distinct.url, pageFor(distinct)],
-    [unnamed.url, pageFor(unnamed).replace(`<p>招聘主体：${unnamed.employer}</p>`, '')],
+    [first.url, pageFor(first)], [same.url, pageFor(same)], [distinct.url, pageFor(distinct, citation)],
+    [unnamed.url, pageFor(unnamed, citation).replace(`<p>招聘主体：${unnamed.employer}</p>`, '')],
   ]));
   const { page } = await run();
   const firstPaths = jobLinks(page, first.title);
@@ -388,4 +411,10 @@ test('JS-07-07 不同招聘方的同号公开职位分别保留，同一招聘�
   const detail = await get(firstPaths[0]);
   assert.ok(detail.includes(first.url) && detail.includes(same.url));
   assert.ok(!detail.includes(distinct.url) && !detail.includes(unnamed.url));
+
+  const manual = await post('/jobs', {
+    jd: `独立手动职位\n招聘主体：乙科技\nJD 来源：${official}\n职责：使用者手动保存的正文`,
+  });
+  assert.equal(manual.status, 303);
+  assert.notEqual(manual.headers.get('location'), firstPaths[0]);
 });

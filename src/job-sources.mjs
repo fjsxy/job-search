@@ -51,8 +51,8 @@ function comparisonUrl(value, kind) {
   return url.href;
 }
 
-function publisherIdentity(recruiter, id) {
-  return recruiter && id ? JSON.stringify(['recruiter', recruiter.normalize('NFKC').trim().toLowerCase(), id]) : null;
+function publisherIdentity(kind, recruiter, evidence) {
+  return recruiter && evidence ? JSON.stringify([kind, recruiter.normalize('NFKC').trim().toLowerCase(), evidence]) : null;
 }
 
 export function manualIdentity(jd) {
@@ -69,8 +69,10 @@ export function manualIdentity(jd) {
   const recruiter = recruiters.length === 1 ? recruiters[0] : null;
   const id = oneValue(/^(?:招聘编号|招聘方(?:职位|岗位)编号)\s*:\s*/u);
   const url = publicUrl(oneValue(/^(?:JD 来源|公司社招官网|官网职位|官网原文|官方职位链接)\s*:\s*/iu));
-  const publisher = /^[a-z0-9_-]{1,100}$/i.test(id ?? '') ? publisherIdentity(recruiter, id) : null;
-  return { publisher, owned: !publisher && url && belongsToSource('official', url) ? comparisonUrl(url, 'official') : null };
+  const publisher = /^[a-z0-9_-]{1,100}$/i.test(id ?? '') ? publisherIdentity('recruiter', recruiter, id) : null;
+  const owned = !publisher && url && belongsToSource('official', url)
+    ? publisherIdentity('official-position', recruiter, comparisonUrl(url, 'official')) : null;
+  return { publisher, owned };
 }
 
 export function observationKeys(job) {
@@ -80,15 +82,16 @@ export function observationKeys(job) {
   const link = new URL(normalized);
   const dedicated = kind === 'boss' || (kind === 'maimai' && link.pathname === '/jobs/job_detail');
   const verifiedPublisher = kind !== 'official' || Boolean(officialPublisherDomain);
-  const currentIdentity = Object.hasOwn(job.source, 'publisherRecruiter');
   // 官网与招聘帖可能在一个 URL 放多条 JD。按确实有证据的职位定位区分。
   const scope = dedicated ? [] : [locator, ambiguousTitle ? jobKey : null];
   return {
     source: JSON.stringify([kind, normalized, ...scope]),
-    publisher: verifiedPublisher ? publisherIdentity(publisherRecruiter, publisherJobKey) : null,
-    // 正文明示引用可以关联已经核实的单职位官网详情，不依赖筛选用签约主体。
-    owned: officialPublisherDomain && officialPosition ? comparisonUrl(url, 'official') : null,
-    cited: currentIdentity && citedOfficialUrl ? comparisonUrl(citedOfficialUrl, 'official') : null,
+    publisher: verifiedPublisher ? publisherIdentity('recruiter', publisherRecruiter, publisherJobKey) : null,
+    // 关键：引用必须同时匹配招聘方与已核实的单职位官网链接。旧裸 URL 键不再参与归并。
+    owned: officialPublisherDomain && officialPosition
+      ? publisherIdentity('official-position', publisherRecruiter, normalized) : null,
+    cited: citedOfficialUrl
+      ? publisherIdentity('official-position', publisherRecruiter, comparisonUrl(citedOfficialUrl, 'official')) : null,
   };
 }
 

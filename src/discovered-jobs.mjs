@@ -75,7 +75,8 @@ export function createDiscoveryStore(db) {
   `);
   // 手动原文仍可重新提取招聘主体；之前因身份冲突而禁用的索引继续禁用。
   const staleManual = db.prepare(`
-    SELECT rowid, jd FROM manual_jds WHERE json_array_length(publisher_key) = 2 OR owned_url_key LIKE '[%'
+    SELECT rowid, jd FROM manual_jds WHERE json_array_length(publisher_key) = 2
+      OR (owned_url_key IS NOT NULL AND owned_url_key NOT LIKE '["official-position",%')
   `).all();
   const reindexManual = db.prepare('UPDATE manual_jds SET publisher_key = ?, owned_url_key = ? WHERE rowid = ?');
   for (const { rowid, jd } of staleManual) {

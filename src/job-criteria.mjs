@@ -159,7 +159,10 @@ function checkLocation(job, pending, excluded) {
   const hasBase = locationLines.some(line => BASE_LABEL.test(line));
   for (const line of locationLines) {
     const explicitBase = BASE_LABEL.test(line);
-    for (const part of key(line.replace(LOCATION_LABEL, '')).split(locationSeparator)) {
+    const location = key(line.replace(LOCATION_LABEL, ''));
+    // Base 城市后的括号只限定 Base，括号里的区县和分隔符不参与办公地址判断。
+    const value = explicitBase ? location.replace(/\s*\([^()]*\)(?=\s*(?:[·、/|,;]|$))/gu, '') : location;
+    for (const part of value.split(locationSeparator)) {
       const { city, district } = addressParts(part, explicitBase, cityNames);
       if (city) (explicitBase ? baseCities : officeCities).add(city);
       if (district && !explicitBase) districts.add(district);
