@@ -1,0 +1,88 @@
+// HTML 文本和属性中的外部输入统一转义。
+export function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
+
+export function renderPage(title, body) {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} · 求职</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { box-sizing: border-box; max-width: 54rem; margin: 0 auto; padding: 1.5rem; line-height: 1.65; }
+    h1, h2, pre { overflow-wrap: anywhere; }
+    section { border: 1px solid GrayText; border-radius: .5rem; margin-block: 1rem; padding: 1rem; }
+    section > :first-child { margin-top: 0; }
+    form { display: grid; gap: .5rem; }
+    textarea, button { font: inherit; }
+    textarea { padding: .5rem; resize: vertical; }
+    button { justify-self: start; padding: .25rem .75rem; cursor: pointer; }
+    pre { white-space: pre-wrap; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <header><a href="/">求职</a></header>
+  <main>${body}</main>
+</body>
+</html>`;
+}
+
+// fields 由调用方构造 HTML，用户输入应先转义。
+export function renderPostForm(action, label, fields = '') {
+  return `<form action="${escapeHtml(action)}" method="post">
+    ${fields}
+    <button type="submit">${escapeHtml(label)}</button>
+  </form>`;
+}
+
+function jobTitle(jd) {
+  // 以第一行有效文字作为列表标题，正文继续保留原样。
+  const firstLine = jd.trimStart().split(/[\r\n]/, 1)[0].trimEnd();
+  const characters = [...firstLine];
+  return characters.length > 120 ? `${characters.slice(0, 120).join('')}…` : firstLine;
+}
+
+export function renderHome(jobs) {
+  const jobList = jobs.map(({ id, jd }) =>
+    `<li><a href="/jobs/${escapeHtml(id)}">${escapeHtml(jobTitle(jd))}</a></li>`).join('\n');
+
+  return renderPage('职位', `
+<h1>职位</h1>
+<section>
+  <h2>已保存职位</h2>
+  ${jobList ? `<ul>${jobList}</ul>` : '<p>还没有保存的职位。</p>'}
+</section>
+<section>
+  <h2>手动导入</h2>
+  ${renderPostForm('/jobs', '保存职位', `
+    <label for="jd">JD 正文</label>
+    <textarea id="jd" name="jd" rows="10" required></textarea>`)}
+</section>`);
+}
+
+export function renderJob({ id, jd }, application) {
+  const title = jobTitle(jd);
+  const applicationContent = application
+    ? '<ul><li>已投递</li></ul>'
+    : renderPostForm(`/jobs/${id}/application`, '确认已投递');
+
+  return renderPage(title, `
+<h1>${escapeHtml(title)}</h1>
+<section>
+  <h2>投递</h2>
+  ${applicationContent}
+</section>
+<section>
+  <h2>JD 正文</h2>
+  <pre><code>${escapeHtml(jd)}</code></pre>
+</section>`);
+}
