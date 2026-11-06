@@ -70,14 +70,14 @@ export function renderHome(jobs) {
 </section>`);
 }
 
-export function renderJob(job, application) {
+export function renderJob(job, application, interviewProgress = '') {
   const { id, jd, source } = job;
   const title = job.title || jobTitle(jd);
   const sourceContent = source
     ? `<section><h2>JD 来源</h2><p><a href="${escapeHtml(source.url)}">公司社招官网</a> · ${escapeHtml(source.locator ?? title)}</p></section>`
     : '';
   const applicationContent = application
-    ? '<ul><li>已投递</li></ul>'
+    ? `<ul><li>已投递</li></ul>${interviewProgress}`
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
