@@ -113,14 +113,15 @@ function checkLocation(job, pending, excluded) {
   const locationLines = job.facts?.locations ?? unique([job.cityEvidence, job.districtEvidence, job.city]);
   const cities = new Set();
   const districts = new Set();
+  // 多个来源可提供不同的已核对城市；纳入每个来源的候选城市用于解析其地点原文。
+  const extraCities = (job.observedCities ?? [job.city]).filter(Boolean)
+    .map(city => key(city).replace(/市$/u, '')).filter(city => /^[\p{Script=Han}]{2,8}$/u.test(city));
+  const cityNames = [...new Set([...CITY_NAMES, ...extraCities])];
   for (const line of locationLines) {
     const address = key(line.replace(LOCATION_LABEL, ''));
     const identified = HANGZHOU_DISTRICTS.filter(district => address.includes(district));
     for (const district of identified) districts.add(district);
     if (/杭州|\bhangzhou\b/u.test(address) || identified.includes('余杭区')) cities.add('杭州');
-    // 从明确地址提取常见城市，并校验来源提供的其他单个城市名称。
-    const candidateCity = job.city ? key(job.city).replace(/市$/u, '') : '';
-    const cityNames = /^[\p{Script=Han}]{2,8}$/u.test(candidateCity) ? [...CITY_NAMES, candidateCity] : CITY_NAMES;
     for (const city of cityNames) {
       if (address.includes(city)) cities.add(city);
     }

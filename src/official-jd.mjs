@@ -1,5 +1,6 @@
 import { parse } from 'parse5';
 import { verifiedJobFacts } from './job-criteria.mjs';
+import { belongsToSource } from './job-sources.mjs';
 import { publicUrl, readPublicPage } from './public-page.mjs';
 
 const skipped = new Set(['script', 'style', 'noscript', 'template', 'svg', 'head', 'nav']);
@@ -13,16 +14,20 @@ const comparable = text => normalize(text).replace(/^(?:[•·]|\d+[.)、])\s*/u
 const heading = /^(?:h[1-6])$/;
 const dutiesLabel = /^(?:(?:岗位|工作|职位)?职责|(?:Key )?Responsibilities?)(?=\s*[:：]|$)/i;
 const requirementsLabel = /^(?:(?:职位|岗位|任职|招聘|工作)?要求|(?:Minimum |Job )?(?:Qualifications|Requirements))(?=\s*[:：]|$)/i;
+const recruitingId = /^(?:招聘编号|招聘方(?:职位|岗位)编号)\s*[:：]\s*/i;
+const officialLinkLabel = /^(?:公司)?(?:招聘官网职位|官网职位|官网原文|官方职位链接)(?:\s*[:：]|$)/u;
 const idLabel = /^(?:(?:职位|岗位|招聘)编号|Job ID)\s*[:：]\s*/i;
 const otherSection = /^(?:加分项|优先条件|投递方式|薪资待遇|职位亮点|工作福利|公司介绍|关于我们|Apply\b|Preferred Qualifications\b)/i;
 
 function flatten(root) {
   const lines = [];
   let line = '';
+  let links = [];
   const flush = tag => {
     const text = line.replace(/\s+/gu, ' ').trim();
-    if (text) lines.push({ text, tag });
+    if (text) lines.push({ text, tag, links });
     line = '';
+    links = [];
   };
   // 按块级节点保留原文行，忽略脚本、导航和模板中的字符串。
   const queue = [{ node: root }];
@@ -34,6 +39,10 @@ function flatten(root) {
       continue;
     }
     if (node.nodeName === '#text') line += node.value;
+    if (node.tagName === 'a') {
+      const href = node.attrs.find(attr => attr.name === 'href')?.value;
+      if (href) links.push(href);
+    }
     if (lineBreak.has(node.tagName)) {
       flush();
       queue.push({ node, end: true });
@@ -60,7 +69,7 @@ function sections(lines, titleIndex) {
     return [headerText, ...scope.slice(from + 1, to).map(line => line.text)].filter(Boolean);
   };
   return {
-    scope, metadata: scope.slice(0, dutiesAt).map(line => line.text),
+    scope, metadata: scope.slice(0, dutiesAt),
     duties: section(dutiesAt, requirementsAt, dutiesLabel),
     requirements: section(requirementsAt, end < 0 ? undefined : end, requirementsLabel),
   };
@@ -75,22 +84,27 @@ function includesOriginal(lines, items) {
 function findPosition(document, candidate) {
   const title = normalize(candidate.title);
   const nodes = [document];
+  const headings = [];
   while (nodes.length) {
     const node = nodes.pop();
     if (skipped.has(node.tagName)) continue;
-    if (heading.test(node.tagName) && normalize(flatten(node).map(line => line.text).join(' ')) === title) {
-      // 从标题往上找能覆盖职责和要求的最小容器；同页其他岗位的内容不参与核对。
-      let parent = node.parentNode;
-      for (let depth = 0; parent && depth < 12; depth++, parent = parent.parentNode) {
-        const lines = flatten(parent);
-        const titleIndex = lines.findIndex(line => normalize(line.text) === title);
-        if (titleIndex < 0) continue;
-        const job = sections(lines, titleIndex);
-        if (job && includesOriginal(job.duties, candidate.duties)
-            && includesOriginal(job.requirements, candidate.requirements)) return job;
-      }
-    }
+    if (heading.test(node.tagName) && normalize(flatten(node).map(line => line.text).join(' ')) === title) headings.push(node);
     for (const child of node.childNodes ?? []) nodes.push(child);
+  }
+  const ambiguousTitle = headings.length > 1;
+  for (const node of headings) {
+    // 从标题往上找能覆盖职责和要求的最小容器；同页同名职位须有独立的招聘编号。
+    let parent = node.parentNode;
+    for (let depth = 0; parent && depth < 12; depth++, parent = parent.parentNode) {
+      const lines = flatten(parent);
+      const matchingTitles = lines.flatMap((line, index) => normalize(line.text) === title ? [index] : []);
+      if (matchingTitles.length !== 1) continue;
+      const job = sections(lines, matchingTitles[0]);
+      if (ambiguousTitle && !job?.metadata.some(({ text }) =>
+        idLabel.test(text) && text.replace(idLabel, '').trim() === candidate.jobKey)) continue;
+      if (job && includesOriginal(job.duties, candidate.duties)
+          && includesOriginal(job.requirements, candidate.requirements)) return { ...job, ambiguousTitle };
+    }
   }
   return null;
 }
@@ -108,37 +122,59 @@ function citedId(value, url, lines) {
 }
 
 export function createOfficialVerifier(readPage = readPublicPage) {
-  return async (candidate, webEvidence, signal) => {
-    const url = publicUrl(candidate?.url)?.href;
+  return async (candidate, webEvidence, signal, kind) => {
+    const link = publicUrl(candidate?.url);
+    const url = link?.href;
     const title = typeof candidate?.title === 'string' && candidate.title.trim().slice(0, 200);
-    if (!url || !title) return null;
+    if (!url || !title || !belongsToSource(kind, link)) return null;
     const webMatches = webEvidence.flatMap(event => (Array.isArray(event.results) ? event.results : [])
       .filter(result => publicUrl(result?.url)?.href === url).map(result => ({ action: event.action?.type, result })));
     if (!webMatches.length) return null;
-    const source = { kind: 'official', url, jobKey: null };
+    const source = { kind, url, jobKey: null };
     const lead = { title, source };
-    if (!candidate.duties?.length || !candidate.requirements?.length) return { lead };
+    const hasOriginal = candidate.duties?.length && candidate.requirements?.length;
     const opened = webMatches.some(({ action, result }) =>
       (['open_page', 'find_in_page'].includes(action) || /^turn\d+view\d+$/.test(result.ref_id))
       && Number(/^Total lines:\s*(\d+)$/u.exec(result.snippet)?.[1]) > 1);
-    if (!opened) return { lead };
+    if (kind === 'official' && (!opened || !hasOriginal)) return { lead };
     const html = await readPage(url, signal);
     if (!html) return { lead, restricted: true };
 
     const document = parse(html);
-    const job = findPosition(document, candidate);
-    if (!job) return { lead };
+    const job = opened && hasOriginal && findPosition(document, candidate);
+    if (!job) {
+      // 普通登录链接可以与公开 JD 共存。仅在无法取得正文且看到验证页或 JS 空壳时标记受限。
+      const visible = flatten(document).map(line => line.text).join(' ');
+      const restricted = kind !== 'official' && (!visible || /安全验证|访问受限|访问异常|请先登录|登录后查看|验证后继续/u.test(visible));
+      return { lead, restricted };
+    }
+    const metadata = job.metadata.map(line => line.text);
     const branding = (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? '').trim();
     const { employerEvidence, ...facts } = verifiedJobFacts(job.scope.slice(1).map(line => line.text), candidate);
     const cityEvidence = citedLine(candidate.city, facts.locations);
     const districtEvidence = citedLine(candidate.district, facts.locations);
     const salaryEvidence = citedLine(candidate.salaryQuote, facts.salaries);
     source.publisherEvidence = branding || null;
-    source.jobKey = citedId(candidate.jobKey, url, job.metadata);
+    source.jobKey = citedId(candidate.jobKey, url, metadata);
+    source.ambiguousTitle = job.ambiguousTitle;
+    const idLabelForSource = kind === 'official' ? idLabel : recruitingId;
+    const publisherIds = [...new Set(metadata.filter(line => idLabelForSource.test(line))
+      .map(line => line.replace(idLabelForSource, '').trim())
+      .filter(id => /^[a-z0-9_-]{1,100}$/i.test(id)))];
+    source.publisherJobKey = publisherIds.length === 1 ? publisherIds[0] : null;
+    // 只有范围明确的官网详情可用于跨源合并。招聘帖的引用必须位于该岗位的正文区。
+    const wholePage = flatten(document);
+    source.officialPosition = kind === 'official' && wholePage.filter(line => dutiesLabel.test(line.text)).length === 1
+      && wholePage.filter(line => requirementsLabel.test(line.text)).length === 1
+      && /\/(?:positions?|job[_-]?detail|jobs?|vacanc(?:y|ies)|careers?|recruit(?:ment)?)\/[^/]+/i.test(link.pathname);
+    const officialLinks = [...new Set(job.metadata.filter(line => officialLinkLabel.test(line.text))
+      .flatMap(line => line.links).map(publicUrl)
+      .filter(link => link && belongsToSource('official', link)).map(link => link.href))];
+    source.citedOfficialUrl = kind !== 'official' && officialLinks.length === 1 ? officialLinks[0] : null;
     source.verifiedAt = new Date().toISOString();
     source.locator = title;
     const { duties, requirements } = job;
-    const jdLines = [title, ...job.metadata.slice(1), '岗位职责', ...duties, '任职要求', ...requirements];
+    const jdLines = [title, ...metadata.slice(1), '岗位职责', ...duties, '任职要求', ...requirements];
     for (const line of [employerEvidence, ...facts.locations, ...facts.salaries]) {
       if (line && !jdLines.includes(line)) jdLines.push(line);
     }

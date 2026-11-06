@@ -26,9 +26,10 @@ if (process.argv[2] === 'login') {
   const emit = event => console.log(JSON.stringify(event));
   let value;
   if (args.includes('web_search="live"')) {
-    const candidates = ${JSON.stringify(officialCandidates)};
+    const candidates = prompt.startsWith('公司社招官网') ? ${JSON.stringify(officialCandidates)} : [];
     const results = candidates.map(candidate => ({ url: candidate.url, snippet: 'Total lines: 40' }));
-    emit({ type: 'item.completed', item: { type: 'web_search', action: { type: 'search' }, results } });
+    emit({ type: 'item.completed', item: { type: 'web_search',
+      action: { type: 'search', queries: ['site:maimai.cn 杭州', 'site:zhipin.com 杭州'] }, results } });
     emit({ type: 'item.completed', item: { type: 'web_search', action: { type: 'open_page' }, results } });
     value = { status: 'completed', candidates };
   } else if (input.jobs) {
@@ -101,12 +102,14 @@ test('JS-05-01 简历只在本机保存，方向提取与公开确认分别提�
   await waitFor(app, run.headers.get('location'), /已完成/);
 
   const calls = await app.calls();
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 4);
   assert.deepEqual(calls[0].input, { resume: TECHNICAL });
   assert.ok(calls[0].args.includes('web_search="disabled"'));
-  assert.deepEqual(Object.keys(calls[1].input).sort(), ['criteria', 'direction']);
-  assert.equal(calls[1].input.direction, '集群调度平台工程');
-  assert.ok(calls[1].args.includes('web_search="live"'));
+  for (const call of calls.slice(1)) {
+    assert.deepEqual(Object.keys(call.input).sort(), ['criteria', 'direction']);
+    assert.equal(call.input.direction, '集群调度平台工程');
+    assert.ok(call.args.includes('web_search="live"'));
+  }
   assert.doesNotMatch(JSON.stringify(calls), /本机合成姓名|local-only@example.org/);
 });
 
@@ -234,8 +237,8 @@ test('JS-05-03 只匹配符合硬条件的核实 JD，引用可回溯并可登�
   assert.match(forged, /简历匹配待确认/);
   assert.doesNotMatch(forged, /简历匹配依据|简历没有这段证明/);
   const calls = await app.calls();
-  assert.equal(calls.length, 2);
-  const match = calls[1];
+  assert.equal(calls.length, 4);
+  const match = calls[3];
   assert.ok(match.args.includes('web_search="disabled"'));
   assert.ok(match.args.includes('service_tier="default"'));
   assert.equal(match.input.resume, TECHNICAL);

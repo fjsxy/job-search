@@ -8,7 +8,7 @@ import { createReviewRunner } from './reviews.mjs';
 import { createScreening } from './screening.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
-import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
+import { createSourceDiscovery, createSearchRunner } from './search.mjs';
 import { createSettings } from './settings.mjs';
 import { createSubscriptionClient, DEFAULT_DATA_DIR, subscriptionHome } from './subscription.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
@@ -39,7 +39,7 @@ export async function startApp({
     const screening = createScreening({ resume, subscription });
     search = createSearchRunner({
       db, jobs, settings: { get: resume.getSearchSettings },
-      discover: createOfficialDiscovery(subscription, readOfficialPage),
+      discover: createSourceDiscovery(subscription, readOfficialPage),
       processVerifiedJobs: screening.processVerifiedJobs,
     });
     const searchRoutes = createSearchRoutes({ settings, search, validateDirection: resume.validateDirection, screening });
@@ -80,7 +80,7 @@ export async function startApp({
 async function handleRequest(request, response, path, jobs, interviews, reviews, screening) {
   if (request.method === 'GET' && path === '/') {
     const visible = jobs.listJobs().map(screening.decorate)
-      .filter(job => job.screening?.status !== 'excluded' || job.hasApplication);
+      .filter(job => job.screening?.status !== 'excluded' || job.isManual || job.hasApplication);
     sendHtml(response, 200, renderHome(visible));
     return;
   }
@@ -112,7 +112,7 @@ async function handleRequest(request, response, path, jobs, interviews, reviews,
   if (request.method === 'POST' && applicationPath) {
     const job = jobs.getJob(applicationPath[1]);
     if (job) {
-      if (screening.decorate(job).screening?.status === 'excluded' && !jobs.getApplication(job.id)) {
+      if (screening.decorate(job).screening?.status === 'excluded' && !job.isManual && !jobs.getApplication(job.id)) {
         throw new HttpError(409, '此职位已退出自动筛选结果');
       }
       jobs.registerApplication(job.id);
