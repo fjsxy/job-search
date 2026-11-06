@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MODEL = 'gpt-6.1-sol';
 const REASONING_EFFORT = 'xhigh';
+const LOGIN_CONFIG = ['-c', 'forced_login_method="chatgpt"', '-c', 'cli_auth_credentials_store="file"'];
 const DISABLED_FEATURES = [
   'shell_tool', 'unified_exec', 'apps', 'plugins', 'hooks', 'memories', 'multi_agent',
   'multi_agent_v2', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access',
@@ -15,18 +17,42 @@ const CODE_MODE_DISABLED = 'Code Mode is unavailable because code-mode host is d
 
 export class SubscriptionError extends Error {}
 
+export const DEFAULT_DATA_DIR = fileURLToPath(new URL('../.job-search-data/', import.meta.url));
+
+export function subscriptionHome(dataDir = DEFAULT_DATA_DIR, override) {
+  return resolve(override ?? join(dataDir, 'codex'));
+}
+
+async function prepareCodexHome(codexHome) {
+  await mkdir(codexHome, { recursive: true, mode: 0o700 });
+  const directory = await lstat(codexHome);
+  if (!directory.isDirectory() || (directory.mode & 0o077) !== 0
+      || (process.getuid && directory.uid !== process.getuid())) {
+    throw new SubscriptionError('专用登录目录必须由当前用户独占，请检查目录权限');
+  }
+  // 关键：Codex 即使忽略用户配置也会加载其运行目录下的全局 AGENTS。
+  for (const filename of ['AGENTS.override.md', 'AGENTS.md']) {
+    try {
+      await lstat(join(codexHome, filename));
+      throw new SubscriptionError('专用登录目录含有 AGENTS 指令，请移除后再运行 Agent');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+}
+
 // 只继承登录和运行 CLI 必需的系统路径，避免环境变量改写认证、端点和工具。
-function cliEnvironment() {
-  const env = { RUST_LOG: 'error' };
+function cliEnvironment(codexHome) {
+  const env = { CODEX_HOME: codexHome, RUST_LOG: 'error' };
   for (const key of ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'LANG', 'LC_CTYPE']) {
     if (process.env[key]) env[key] = process.env[key];
   }
   return env;
 }
 
-function command(executable, args, { cwd, input, signal, timeout, login = false }) {
+function command(executable, args, { codexHome, cwd, input, signal, timeout, login = false }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, env: cliEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(executable, args, { cwd, env: cliEnvironment(codexHome), stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
     let failure;
     let forceStop;
@@ -90,22 +116,37 @@ function readResult({ code, output }, webSearch) {
   }
 }
 
-export function createSubscriptionClient({ executable = 'codex' } = {}) {
+// 将本应用的订阅登录保存在专用目录，终端交互由 Codex CLI 负责。
+export async function loginForSubscription({ codexHome = subscriptionHome(), executable = 'codex' } = {}) {
+  await prepareCodexHome(codexHome);
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, ['login', ...LOGIN_CONFIG], {
+      cwd: codexHome, env: cliEnvironment(codexHome), stdio: 'inherit',
+    });
+    child.once('error', () => reject(new SubscriptionError('无法启动 Codex CLI，请检查安装')));
+    child.once('close', code => resolve(code ?? 1));
+  });
+}
+
+export function createSubscriptionClient({ executable = 'codex', codexHome = subscriptionHome() } = {}) {
   return {
     // 私有任务默认禁用公开搜索。调用方仅提供该任务所需的提示词和输出 schema。
     async run({ prompt, schema, fastMode = true, webSearch = false, signal }) {
+      await prepareCodexHome(codexHome);
       const cwd = await mkdtemp(join(tmpdir(), 'job-search-agent-'));
       try {
-        const login = await command(executable, ['login', 'status'], { cwd, signal, timeout: 10_000, login: true });
+        const login = await command(executable, ['login', 'status', ...LOGIN_CONFIG], {
+          codexHome, cwd, signal, timeout: 10_000, login: true,
+        });
         if (login.code !== 0 || !/\bLogged in using ChatGPT\b/.test(login.output)) {
-          throw new SubscriptionError('请在终端执行 codex login 并使用 ChatGPT 登录');
+          throw new SubscriptionError('请在终端执行 make login 并使用 ChatGPT 登录');
         }
         const schemaPath = join(cwd, 'output.json');
         await writeFile(schemaPath, JSON.stringify(schema), { mode: 0o600 });
         const args = [
           'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
           '--sandbox', 'read-only', '--json', '--color', 'never', '-m', MODEL,
-          '-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"',
+          '-c', 'model_provider="openai"', ...LOGIN_CONFIG,
           '-c', 'project_doc_max_bytes=0', '-c', 'mcp_servers={}',
           '-c', `model_reasoning_effort="${REASONING_EFFORT}"`,
           '--enable', 'fast_mode', '-c', `service_tier="${fastMode ? 'fast' : 'default'}"`,
@@ -114,7 +155,7 @@ export function createSubscriptionClient({ executable = 'codex' } = {}) {
         for (const feature of DISABLED_FEATURES) args.push('--disable', feature);
         // CLI 0.166 的公开搜索由 code-mode host 暴露，私有任务仍关闭该能力。
         args.push(webSearch ? '--enable' : '--disable', 'code_mode_host', '-');
-        const result = await command(executable, args, { cwd, input: prompt, signal, timeout: 480_000 });
+        const result = await command(executable, args, { codexHome, cwd, input: prompt, signal, timeout: 480_000 });
         return readResult(result, webSearch);
       } finally {
         await rm(cwd, { recursive: true, force: true });

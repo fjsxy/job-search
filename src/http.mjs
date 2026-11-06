@@ -41,16 +41,20 @@ export async function readForm(request) {
     throw new HttpError(415, '无法读取表单格式');
   }
 
-  // 按实际收到的字节计数，限制包括分块传输在内的表单大小。
+  return new URLSearchParams((await readBody(request, MAX_FORM_BYTES)).toString('utf8'));
+}
+
+export async function readBody(request, maxBytes) {
+  // 按实际收到的字节计数，分块传输同样受大小限制。
   const chunks = [];
   let size = 0;
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > MAX_FORM_BYTES) {
+    if (size > maxBytes) {
       request.resume();
       throw new HttpError(413, '表单过大，请缩短正文后重试');
     }
     chunks.push(chunk);
   }
-  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+  return Buffer.concat(chunks);
 }

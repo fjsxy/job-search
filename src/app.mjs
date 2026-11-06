@@ -1,46 +1,54 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { fileURLToPath } from 'node:url';
 import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './http.mjs';
 import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
 import { createInterviewStore } from './interviews.mjs';
+import { createResume } from './resume.mjs';
+import { createReviewRunner } from './reviews.mjs';
+import { createScreening } from './screening.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
 import { createSourceDiscovery, createSearchRunner } from './search.mjs';
 import { createSettings } from './settings.mjs';
-import { createSubscriptionClient } from './subscription.mjs';
+import { createSubscriptionClient, DEFAULT_DATA_DIR, subscriptionHome } from './subscription.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
 
 const HOST = '127.0.0.1';
-const DEFAULT_DATA_DIR = fileURLToPath(new URL('../.job-search-data/', import.meta.url));
 
 function loopbackUrl(port) {
   return new URL(`http://${HOST}:${port}`);
 }
 
 export async function startApp({
-  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, readOfficialPage,
-  subscription = createSubscriptionClient({ executable: codexExecutable }),
+  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, codexHome, readOfficialPage,
+  subscription = createSubscriptionClient({ executable: codexExecutable, codexHome: subscriptionHome(dataDir, codexHome) }),
 } = {}) {
   // 由本机进程持有数据库，浏览器关闭时不影响数据连接。
   const db = openDatabase(dataDir);
   const server = createServer();
   let search;
+  let resume;
+  let reviews;
 
   try {
     const jobs = createJobStore(db);
     const interviews = createInterviewStore(db);
     const settings = createSettings(db);
+    resume = createResume({ db, settings, subscription });
+    reviews = createReviewRunner({ db, settings, subscription });
+    const screening = createScreening({ resume, subscription });
     search = createSearchRunner({
-      db, jobs, settings, discover: createSourceDiscovery(subscription, readOfficialPage),
+      db, jobs, settings: { get: resume.getSearchSettings },
+      discover: createSourceDiscovery(subscription, readOfficialPage),
+      processVerifiedJobs: screening.processVerifiedJobs,
     });
-    const searchRoutes = createSearchRoutes({ settings, search });
+    const searchRoutes = createSearchRoutes({ settings, search, validateDirection: resume.validateDirection, screening });
     server.on('request', async (request, response) => {
       try {
         protectLocalRequest(request, response, loopbackUrl(request.socket.localPort));
         const path = request.url.split('?', 1)[0];
-        if (!await searchRoutes(request, response, path)) {
-          await handleRequest(request, response, path, jobs, interviews);
+        if (!await resume.handle(request, response, path) && !await searchRoutes(request, response, path)) {
+          await handleRequest(request, response, path, jobs, interviews, reviews, screening);
         }
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
@@ -61,15 +69,19 @@ export async function startApp({
       await Promise.all([
         new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
         search.close(),
+        resume.close(),
+        reviews.close(),
       ]);
       db.close();
     },
   };
 }
 
-async function handleRequest(request, response, path, jobs, interviews) {
+async function handleRequest(request, response, path, jobs, interviews, reviews, screening) {
   if (request.method === 'GET' && path === '/') {
-    sendHtml(response, 200, renderHome(jobs.listJobs()));
+    const visible = jobs.listJobs().map(screening.decorate)
+      .filter(job => job.screening?.status !== 'excluded' || job.isManual || job.hasApplication);
+    sendHtml(response, 200, renderHome(visible));
     return;
   }
 
@@ -91,7 +103,7 @@ async function handleRequest(request, response, path, jobs, interviews) {
     if (job) {
       const application = jobs.getApplication(job.id);
       const interviewProgress = application && renderInterviewProgress(job.id, interviews.listRounds(application.id));
-      sendHtml(response, 200, renderJob(job, application, interviewProgress));
+      sendHtml(response, 200, renderJob(screening.decorate(job), application, interviewProgress));
       return;
     }
   }
@@ -100,13 +112,16 @@ async function handleRequest(request, response, path, jobs, interviews) {
   if (request.method === 'POST' && applicationPath) {
     const job = jobs.getJob(applicationPath[1]);
     if (job) {
+      if (screening.decorate(job).screening?.status === 'excluded' && !job.isManual && !jobs.getApplication(job.id)) {
+        throw new HttpError(409, '此职位已退出自动筛选结果');
+      }
       jobs.registerApplication(job.id);
       redirect(response, `/jobs/${job.id}`);
       return;
     }
   }
 
-  if (await handleInterviewRequest(request, response, path, jobs, interviews)) {
+  if (await handleInterviewRequest(request, response, path, jobs, interviews, reviews)) {
     return;
   }
 

@@ -173,7 +173,7 @@ test('JS-07-03 先显示新增及 JD 更新，核验时间和原链接跟踪参�
 });
 
 test('官网原文链接只合并可核实的单职位详情，跨源字段分歧保留原文并待确认', async t => {
-  const companyJob = candidate(official);
+  const companyJob = candidate(official, '平台工程师', { salaryQuote: '人民币 20k–30k/月' });
   const platformJob = candidate(maimai, '平台研发工程师', { district: '西湖区' });
   const listUrl = 'https://careers.example.org/jobs';
   const listing = candidate(listUrl, '列表内的系统工程师');
@@ -197,6 +197,7 @@ test('官网原文链接只合并可核实的单职位详情，跨源字段分�
   assert.equal(merged.length, 1);
   const detail = await get(merged[0]);
   assert.match(detail, /待确认[\s\S]*办公地点/);
+  assert.match(detail, /月薪信息有冲突，待确认/);
   assert.match(detail, /办公地点：杭州余杭区/);
   assert.match(detail, /办公地点：杭州西湖区/);
   assert.ok(detail.includes(official) && detail.includes(maimai));

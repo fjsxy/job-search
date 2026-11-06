@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { screenHardConditions } from './job-criteria.mjs';
+import { combineScreening } from './screening.mjs';
 import { manualIdentity, observationKeys } from './job-sources.mjs';
 
 function comparableJob(jd) {
@@ -6,6 +8,32 @@ function comparableJob(jd) {
   return jd.split('\n').map(line => line.normalize('NFKC').replace(/\s+/gu, ' ').trim())
     .filter(line => line && !/^(?:更新时间|发布时间|发布于|招聘编号|(?:职位|岗位)编号|公司官网|官网职位|官网原文|官方职位链接)\s*:/u.test(line))
     .join('\n');
+}
+
+function reconcileScreening(display, rows) {
+  if (rows.length < 2) return {};
+  const observations = rows.map(row => JSON.parse(row.details));
+  const original = observations.find(job => observationKeys(job).source === observationKeys(display).source);
+  const match = original?.screening ?? display.screening;
+  if (!match) return {};
+  // 汇总每个已核实来源的硬条件事实。匹配引文仍对应当前展示的那份 JD。
+  const facts = { employers: [], groups: [], locations: [], salaries: [] };
+  for (const job of observations) {
+    const sourceFacts = job.facts ?? {
+      employers: [job.employer], groups: [], locations: [job.cityEvidence, job.districtEvidence, job.city],
+      salaries: [job.salaryQuote],
+    };
+    for (const name of Object.keys(facts)) facts[name].push(...sourceFacts[name].filter(Boolean));
+  }
+  const observedCities = observations.map(job => job.city);
+  const hard = screenHardConditions({ ...display, facts, observedCities });
+  const conflicts = hard.pending.flatMap(message => {
+    const label = /^(招聘主体|Base|办公地点|月薪)\s*信息有冲突/u.exec(message)?.[1];
+    return label ? [label] : [];
+  });
+  const screening = combineScreening(hard,
+    match.matchStatus === 'skipped' && !hard.excluded.length ? { matchStatus: 'pending' } : match);
+  return { screening, conflicts };
 }
 
 export function createDiscoveryStore(db) {
@@ -154,13 +182,8 @@ export function createDiscoveryStore(db) {
         ...JSON.parse(observation.details), jd: observation.jd, urls: JSON.parse(observation.urls),
       }));
       const sources = observations.flatMap(({ source, urls }) => urls.map(url => ({ ...source, url })));
-      const fields = { employer: '招聘主体', city: 'Base', district: '办公地点', salaryQuote: '月薪' };
-      const conflicts = Object.entries(fields).flatMap(([key, label]) => {
-        const values = new Set(observations.map(job => job[key]?.normalize('NFKC').replace(/\s+/gu, '')).filter(Boolean));
-        return values.size > 1 ? [label] : [];
-      });
       return {
-        sources, conflicts, manualJds: selectManual.all(id).map(({ jd }) => jd), sourceJds: observations.map(({ source, jd }) => ({ source, jd })),
+        sources, manualJds: selectManual.all(id).map(({ jd }) => jd), sourceJds: observations.map(({ source, jd }) => ({ source, jd })),
       };
     },
     save({ jd, ...details }, { runId, observedAt }) {
@@ -186,25 +209,28 @@ export function createDiscoveryStore(db) {
       const [oldest] = previousDetails
         .map(details => ({ at: details.firstDiscoveredAt ?? details.source.verifiedAt, runId: details.firstRunId }))
         .filter(item => item.at).sort((left, right) => left.at.localeCompare(right.at));
+      const [latestChange] = previousDetails.filter(job => job.changedAt)
+        .sort((left, right) => right.changedAt.localeCompare(left.changedAt));
       const activity = {
         firstDiscoveredAt: oldest?.at ?? observedAt,
         firstRunId: oldest ? oldest.runId : runId,
-        changedAt: changed ? observedAt : prior?.changedAt,
-        changedRunId: changed ? runId : prior?.changedRunId,
+        changedAt: changed ? observedAt : latestChange?.changedAt,
+        changedRunId: changed ? runId : latestChange?.changedRunId,
       };
-      const serialized = JSON.stringify({ ...display, ...activity });
       if (keeper) {
         if (display === details) updateJob.run(jd, id);
       } else {
         insertJob.run(id, jd);
       }
-      if (prior) updateDiscovery.run(serialized, id);
-      // 手动职位首次核实时新建发现记录，保留原 ID 和手动原文。
-      else insertDiscovery.run(id, id, serialized);
       writeObservation(id, {
         source_key: key.source, publisher_key: key.publisher, owned_url_key: key.owned, cited_url_key: key.cited,
         jd, details: JSON.stringify(details), urls: JSON.stringify([details.source.url]),
       });
+      const screening = reconcileScreening(display, selectObservations.all(id));
+      const serialized = JSON.stringify({ ...display, ...activity, ...screening });
+      if (prior) updateDiscovery.run(serialized, id);
+      // 手动职位首次核实时新建发现记录，保留原 ID 和手动原文。
+      else insertDiscovery.run(id, id, serialized);
       return id;
     },
   };

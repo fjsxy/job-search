@@ -58,13 +58,33 @@ function discoveryDates({ firstDiscoveredAt, changedAt }) {
   return `${firstDiscoveredAt ? ` · 首次发现于 ${date(firstDiscoveredAt)}` : ''}${changedAt ? ` · JD 更新于 ${date(changedAt)}` : ''}`;
 }
 
+export function screeningLabel({ screening }) {
+  return { matched: '符合筛选条件', pending: '待确认', excluded: '已退出自动筛选' }[screening?.status] ?? '';
+}
+
+function renderScreening(job) {
+  const { screening } = job;
+  if (!screening) return '';
+  const { matchStatus, pending, excluded, evidence, employerSource, matchNote } = screening;
+  const labels = [...pending, ...excluded];
+  if (matchStatus === 'pending') labels.push(matchNote || '简历匹配待确认');
+  if (matchStatus === 'unmatched') labels.push('核心职责或必备能力与简历不匹配');
+  return `<section><h2>筛选与匹配</h2>
+    <p>${screeningLabel(job)}</p>
+    ${labels.length ? `<ul>${labels.map(label => `<li>${escapeHtml(label)}</li>`).join('')}</ul>` : ''}
+    ${employerSource ? `<p><a href="${escapeHtml(employerSource)}">招聘主体归属依据</a></p>` : ''}
+    ${evidence.length ? `<h3>简历匹配依据</h3><dl>${evidence.map(item => `<dt>${item.kind === 'duty' ? '核心职责' : '必备能力'}</dt>
+      <dd>JD：<q>${escapeHtml(item.jdQuote)}</q></dd><dd>简历：<q>${escapeHtml(item.resumeQuote)}</q></dd>`).join('')}</dl>` : ''}
+  </section>`;
+}
+
 export function renderHome(jobs) {
   const jobList = jobs.map(job =>
-    `<li><a href="/jobs/${escapeHtml(job.id)}">${escapeHtml(jobTitle(job.jd))}</a>${discoveryDates(job)}</li>`).join('\n');
+    `<li><a href="/jobs/${escapeHtml(job.id)}">${escapeHtml(job.title || jobTitle(job.jd))}</a>${screeningLabel(job) ? ` · ${screeningLabel(job)}` : ''}${discoveryDates(job)}</li>`).join('\n');
 
   return renderPage('职位', `
 <h1>职位</h1>
-<p><a href="/search">职位搜索与 Agent 设置</a></p>
+<p><a href="/search">职位搜索与 Agent 设置</a> · <a href="/settings/resume">简历与求职方向</a></p>
 <section>
   <h2>已保存职位</h2>
   ${jobList ? `<ul>${jobList}</ul>` : '<p>还没有保存的职位。</p>'}
@@ -78,14 +98,11 @@ export function renderHome(jobs) {
 }
 
 export function renderJob(job, application, interviewProgress = '') {
-  const { id, jd, sources, conflicts, sourceJds, manualJds } = job;
+  const { id, jd, sources, sourceJds, manualJds } = job;
   const title = job.title || jobTitle(jd);
   const sourceContent = sources?.length
     ? `<section><h2>JD 来源</h2><ul>${sources.map(source =>
       `<li><a href="${escapeHtml(source.url)}">${sourceLabels[source.kind]}</a> · ${escapeHtml(source.locator ?? title)}</li>`).join('')}</ul></section>`
-    : '';
-  const conflicting = conflicts?.length
-    ? `<p><strong>待确认</strong> · 来源间的${escapeHtml(conflicts.join('、'))}不一致，请核对各出处。</p>`
     : '';
   const originalJds = sourceJds?.length > 1 ? sourceJds.map(({ source, jd }) => `<details>
     <summary>${sourceLabels[source.kind]} · ${escapeHtml(source.locator ?? title)}</summary>
@@ -96,13 +113,14 @@ export function renderJob(job, application, interviewProgress = '') {
   </section>` : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`
+    : job.screening?.status === 'excluded' && !job.isManual ? '<p>此职位已退出自动筛选结果。</p>'
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
 <h1>${escapeHtml(title)}</h1>
 ${job.firstDiscoveredAt ? `<p>公开搜索${discoveryDates(job)}</p>` : ''}
 ${sourceContent}
-${conflicting}
+${renderScreening(job)}
 <section>
   <h2>投递</h2>
   ${applicationContent}
