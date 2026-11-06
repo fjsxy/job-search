@@ -167,8 +167,8 @@ function citedId(value, url, lines) {
 function isAccessWall(branding, lines) {
   // 只识别阻止读取职位的提示。投递进度、账号等功能的登录说明不算验证墙。
   const wall = /^(?:please[\s,:;.!-]+)?(?:请(?:先)?完成(?:安全|人机)验证|安全验证|访问受限|访问异常|验证后继续|无权访问|access denied\b|verify (?:that )?you(?: are|['’]re) human\b|checking your browser\b)/iu;
-  const jdLogin = /^(?:请(?:先)?登录(?:后|以)?|登录后(?:方可|才能|才可)?)[\s,;:。.!-]*(?:再)?(?:查看|访问|阅读)\s*(?:完整|全部)?(?:该|本)?(?:职位|岗位|招聘)(?:详情|描述|信息|正文|$)/u;
-  const englishLogin = /^(?:please[\s,:;.!-]+)?(?:log[\s-]?in|sign[\s-]?in)[\s,;:.!-]+(?:to\s+)?(?:view|read|access)\s+(?:the\s+|this\s+)?(?:full\s+)?(?:job|position|vacancy)(?:\s+(?:details?|description|posting)\b|[.!]?$)/iu;
+  const jdLogin = /^(?:请(?:先)?登录(?:后|以)?|登录后(?:方可|才能|才可)?|(?:您|你)?(?:需要|必须|须)(?:先)?登录(?:后)?(?:方可|才能|才可))[\s,;:。.!-]*(?:再)?(?:查看|访问|阅读)\s*(?:完整|全部)?(?:该|本)?(?:职位|岗位|招聘)(?:详情|描述|信息|正文|$)/u;
+  const englishLogin = /^(?:please[\s,:;.!-]+)?(?:log[\s-]?in|sign[\s-]?in)[\s,;:.!-]+(?:to\s+)?(?:view|read|access|see)\s+(?:the\s+|this\s+)?(?:full\s+)?(?:job|position|vacancy)(?:\s+(?:details?|description|posting)\b|[.!]?$)/iu;
   const title = normalize(branding);
   const loginPage = /^(?:(?:请先)?登录|log in|login|sign in)\s*(?:$|[|·–—-])/iu.test(title);
   const browserChallenge = /^just a moment\b/iu.test(title)

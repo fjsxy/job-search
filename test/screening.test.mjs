@@ -294,8 +294,8 @@ test('JS-05-03 更新原始简历会停用旧技术文本，历史结果的证�
 test('明确 Base 和实际办公区县独立筛选，Base 中的区县不能代替办公地址', async t => {
   const app = await start(t, officialFixtures([
     { title: '上海 Base 杭州办公', extra: '<p>Base：上海</p>' },
-    { title: '括号上海 Base 杭州办公', extra: '<p>Base：上海（浦东新区）</p>' },
-    { title: '括号杭州 Base 办公区县未给出', office: '待确认', extra: '<p>Base：杭州（余杭区、西湖区）</p>' },
+    { title: '括号上海 Base 杭州办公', extra: '<p>Base：上海（浦东新区）。</p>' },
+    { title: '括号杭州 Base 办公区县未给出', office: '待确认', extra: '<p>Base：杭州（余杭区、西湖区）。</p>' },
     { title: '杭州 Base 上海办公', city: '上海', district: '浦东新区', extra: '<p>Base：杭州</p>' },
     { title: '杭州 Base 南昌西湖办公', city: '杭州', district: null, extra: '<p>Base：杭州</p><p>办公地址：南昌西湖区</p>', office: '南昌西湖区' },
     { title: '杭州 Base 余杭办公', extra: '<p>Base：杭州西湖区</p>' },
@@ -307,6 +307,16 @@ test('明确 Base 和实际办公区县独立筛选，Base 中的区县不能代
   assert.doesNotMatch(cityOnly, /杭州 Base 待确认|Base 信息有冲突/);
   const detail = await app.page(jobLink(page, '杭州 Base 余杭办公'));
   assert.doesNotMatch(detail, /办公地点信息有冲突|办公地点待确认|Base 信息有冲突/);
+});
+
+test('JS-05-05 Base 嵌套括号内的区县不参与筛选，括号外仍区分多个城市', async t => {
+  const app = await start(t, officialFixtures([
+    { title: '嵌套括号上海岗位', extra: '<p>Base：上海（浦东新区（张江））。</p>' },
+    { title: '两个 Base 的岗位', extra: '<p>Base：杭州（西湖区）、上海（浦东新区（张江））。</p>' },
+  ]));
+  const page = await runSearch(app);
+  assert.doesNotMatch(page, /嵌套括号上海岗位/);
+  assert.match(await app.page(jobLink(page, '两个 Base 的岗位')), /Base 信息有冲突，待确认/);
 });
 
 test('JS-05-05 Base 直接读取原文，办公地址只按行政区划前缀判断', async t => {

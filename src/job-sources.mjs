@@ -1,4 +1,5 @@
 import { namedRecruiters } from './job-criteria.mjs';
+import { officialPublisher } from './official-publisher.mjs';
 import { publicUrl } from './public-page.mjs';
 
 // 来源 ID 会持久化在搜索结果和职位记录中，标签供浏览器页面使用。
@@ -93,6 +94,31 @@ export function observationKeys(job) {
     cited: citedOfficialUrl
       ? publisherIdentity('official-position', publisherRecruiter, comparisonUrl(citedOfficialUrl, 'official')) : null,
   };
+}
+
+export function restoredObservationKeys(source, jd) {
+  const lines = jd.split('\n');
+  const dutiesAt = lines.indexOf('岗位职责');
+  const metadata = dutiesAt > 0 ? lines.slice(1, dutiesAt) : [];
+  if (source.kind === 'official') {
+    // 只有旧版已核实归属的官网可复用索引，还须用持久化证据通过当前归属规则。
+    const link = publicUrl(source.url);
+    const domain = link && source.officialPublisherDomain && source.publisherRecruiter
+      ? officialPublisher({
+        link, branding: source.publisherEvidence ?? '', lines: metadata, recruiters: [source.publisherRecruiter],
+      })
+      : null;
+    const officialPublisherDomain = domain === source.officialPublisherDomain ? domain : null;
+    return observationKeys({ source: { ...source, officialPublisherDomain, citedOfficialUrl: null } });
+  }
+
+  // 旧平台观察保存了唯一官网引用及原文元数据。签约主体和职责正文都不能补作招聘主体。
+  const recruiters = namedRecruiters(metadata);
+  const publisherRecruiter = Object.hasOwn(source, 'publisherRecruiter') ? source.publisherRecruiter
+    : recruiters.length === 1 ? recruiters[0] : null;
+  const cited = publicUrl(source.citedOfficialUrl);
+  const citedOfficialUrl = cited && belongsToSource('official', cited) ? cited.href : null;
+  return observationKeys({ source: { ...source, publisherRecruiter, citedOfficialUrl } });
 }
 
 export const activityLabels = { new: '首次发现', changed: 'JD 已更新' };

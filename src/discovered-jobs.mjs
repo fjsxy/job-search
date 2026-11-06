@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { screenHardConditions } from './job-criteria.mjs';
 import { combineScreening } from './screening.mjs';
-import { manualIdentity, observationKeys } from './job-sources.mjs';
+import { manualIdentity, observationKeys, restoredObservationKeys } from './job-sources.mjs';
 
 function comparableJob(jd) {
   // 页面时间、跟踪链接和招聘编号只描述出处；职责、要求及职位字段才决定 JD 是否有变化。
@@ -33,6 +33,28 @@ function reconcileScreening(display, rows) {
   const screening = combineScreening(hard,
     match.matchStatus === 'skipped' && !hard.excluded.length ? { matchStatus: 'pending' } : match);
   return { screening, conflicts };
+}
+
+function migrateObservationKeys(db) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (db.prepare('PRAGMA user_version').get().user_version < 1) {
+      // 关键：只重建归并索引，原观察、出处和投递原位保留。旧索引已被清空的观察也参与恢复。
+      const observations = db.prepare('SELECT rowid, jd, details FROM job_observations').all();
+      const update = db.prepare(`
+        UPDATE job_observations SET publisher_key = ?, owned_url_key = ?, cited_url_key = ? WHERE rowid = ?
+      `);
+      for (const { rowid, jd, details } of observations) {
+        const { publisher, owned, cited } = restoredObservationKeys(JSON.parse(details).source, jd);
+        update.run(publisher, owned, cited, rowid);
+      }
+      db.exec('PRAGMA user_version = 1');
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function createDiscoveryStore(db) {
@@ -67,12 +89,7 @@ export function createDiscoveryStore(db) {
     );
   `);
 
-  // 旧观察索引曾使用签约雇主或较宽松的官网证据。保留历史，复查来源后再建立索引。
-  db.exec(`
-    UPDATE job_observations SET publisher_key = NULL, owned_url_key = NULL, cited_url_key = NULL
-    WHERE (publisher_key IS NOT NULL OR owned_url_key IS NOT NULL OR cited_url_key IS NOT NULL)
-      AND json_type(details, '$.source.publisherRecruiter') IS NULL
-  `);
+  migrateObservationKeys(db);
   // 手动原文仍可重新提取招聘主体；之前因身份冲突而禁用的索引继续禁用。
   const staleManual = db.prepare(`
     SELECT rowid, jd FROM manual_jds WHERE json_array_length(publisher_key) = 2
@@ -136,7 +153,7 @@ export function createDiscoveryStore(db) {
   `).all();
   for (const { job_id, details, jd } of legacy) {
     const record = JSON.parse(details);
-    const key = observationKeys(record);
+    const key = restoredObservationKeys(record.source, jd);
     saveObservation.run(job_id, key.source, key.publisher, key.owned, key.cited, jd, details, JSON.stringify([record.source.url]));
   }
 

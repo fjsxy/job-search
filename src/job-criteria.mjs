@@ -147,6 +147,30 @@ function addressParts(value, explicitBase, cityNames) {
   return { city: city ?? (district === '余杭区' ? '杭州' : null), district };
 }
 
+function withoutBaseAnnotations(location) {
+  // 行末标点不属于地名。删除紧跟在 Base 地名后的成对括号，包含嵌套括号。
+  const value = location.replace(/[。.!?]+$/u, '').trimEnd();
+  let depth = 0;
+  let start = 0;
+  let keptFrom = 0;
+  let result = '';
+  for (const match of value.matchAll(/[()]/gu)) {
+    const index = match.index;
+    if (match[0] === '(') {
+      if (depth === 0) start = index;
+      depth++;
+      continue;
+    }
+    if (depth === 0) continue;
+    depth--;
+    if (depth === 0 && /^\s*(?:[·、/|,;]|$)/u.test(value.slice(index + 1))) {
+      result += value.slice(keptFrom, start);
+      keptFrom = index + 1;
+    }
+  }
+  return result + value.slice(keptFrom);
+}
+
 function checkLocation(job, pending, excluded) {
   const locationLines = job.facts?.locations ?? unique([job.cityEvidence, job.districtEvidence, job.city]);
   const baseCities = new Set();
@@ -161,9 +185,9 @@ function checkLocation(job, pending, excluded) {
     const explicitBase = BASE_LABEL.test(line);
     const location = key(line.replace(LOCATION_LABEL, ''));
     // Base 城市后的括号只限定 Base，括号里的区县和分隔符不参与办公地址判断。
-    const value = explicitBase ? location.replace(/\s*\([^()]*\)(?=\s*(?:[·、/|,;]|$))/gu, '') : location;
+    const value = explicitBase ? withoutBaseAnnotations(location) : location;
     for (const part of value.split(locationSeparator)) {
-      const { city, district } = addressParts(part, explicitBase, cityNames);
+      const { city, district } = addressParts(part.trim(), explicitBase, cityNames);
       if (city) (explicitBase ? baseCities : officeCities).add(city);
       if (district && !explicitBase) districts.add(district);
     }

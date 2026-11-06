@@ -5,7 +5,7 @@ const publisherLabel = /^(?:发布方|发布者|发布单位|信息发布方|来
 const reprint = /^(?:[【[]\s*)?(?:(?:本文|本帖|本岗位|本职位|以下信息)[^。；]{0,60})?(?:转载|转发|转自|搬运|代招|reposted\b|republished\b)/iu;
 const boardBrand = /招聘网(?:站)?|招聘信息平台|求职平台|人才网|职位聚合|\bjob\s*(?:board|aggregator)\b/iu;
 const genericBrand = /^(?:科技|信息|技术|网络|软件|信息科技|网络科技|招聘|官网|公司|首页|集团|人才|岗位|职位|社会招聘|加入我们|人才招聘|www|jobs?|careers?|recruit(?:ment)?|hr|work|hire|hiring|talent|zhaopin|home|official)$/iu;
-const officialSubdomain = /^(?:www|talent|careers?|jobs?|join|recruit(?:ment)?|hr|zhaopin|official)$/iu;
+const officialSubdomain = /^(?:www|talent|careers?|jobs?|join|recruit(?:ment)?|hr|zhaopin|official|apply\.(?:careers?|jobs?|recruit(?:ment)?))$/iu;
 const legalRegion = /^(?:中国|北京|上海|杭州|深圳|广州|南京|苏州|成都|武汉|宁波|合肥)(?:市)?\s*/u;
 const brandSuffix = /^\s*(?:网络科技|信息科技|科技|网络|信息|技术)?(?:集团)?(?:控股)?(?:股份)?(?:有限责任公司|有限公司|公司)?\s*(?:招聘官网|公司官网|社会招聘|人才招聘|校园招聘|招聘|官网|加入我们|职位详情)?$/u;
 const key = text => text.normalize('NFKC').trim().toLowerCase().replace(/\s+/gu, ' ');
@@ -54,7 +54,7 @@ export function officialPublisher({ document, link, branding, lines, recruiters 
   // 公共后缀可能有多段（如 com.cn）。共享托管的注册域或子域都不能证明公司归属。
   const domain = parseDomain(link.hostname, { allowPrivateDomains: true });
   if (!domain.domain || !domain.isIcann || domain.isPrivate) return null;
-  // 通用子域可能提供自助发布，例如 sites.google.com；不能继承注册域的官网身份。
+  // 招聘入口可下设 apply，例如 apply.careers.microsoft.com。通用托管子域不能继承品牌归属。
   if (domain.subdomain && !officialSubdomain.test(domain.subdomain)) return null;
   const brand = domainToUnicode(domain.domainWithoutSuffix);
   if (brand.length < (/^[\p{Script=Han}]+$/u.test(brand) ? 2 : 3) || genericBrand.test(brand) || !containsName(branding, brand, true)) return null;
@@ -67,7 +67,8 @@ export function officialPublisher({ document, link, branding, lines, recruiters 
   const [publisher] = publisherNames;
   if ((recruiter && publisher && recruiter !== publisher) || boardBrand.test(publisher ?? '')) return null;
   const authority = recruiter ?? publisher;
-  const logos = homeBrands(document, link);
+  // 升级时仅有存档标题及原文，必须有明确发布方或招聘主体才能复用旧官网证据。
+  const logos = document ? homeBrands(document, link) : [];
   if (logos.some(logo => boardBrand.test(logo))) return null;
 
   // 关键：同页标题和站标可以互相抄录，品牌必须还与独立注册域匹配。

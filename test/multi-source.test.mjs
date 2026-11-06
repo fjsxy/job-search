@@ -257,14 +257,16 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
   const brandedBoard = candidate('https://aggregator.com/jobs/123', '聚合站带招聘方名称');
   const hostedByGoogle = candidate('https://sites.google.com/view/copied/jobs/123', '自助建站伪造的职位', { employer: 'Google' });
   const nestedHost = candidate('https://careers.other.example.org/jobs/123', '任意子域伪造的职位');
+  const nestedApply = candidate('https://apply.other.microsoft.com/careers?pid=123', '非招聘入口的多级子域', { employer: 'Microsoft' });
   const copiedBrand = candidate(new URL('https://未来.com/jobs/123').href, '中文域名后缀仿冒职位', { employer: '某新未来集团' });
   const genericBrand = candidate(new URL('https://科技.com/jobs/123').href, '通用中文域名仿冒职位', { employer: '星河科技集团' });
   const copiedLogo = candidate(new URL('https://www.未来.com/jobs/123').href, '中文站标后缀仿冒职位', { employer: '某新未来集团' });
-  const weakBrands = [hostedByGoogle, nestedHost, copiedBrand, genericBrand, copiedLogo];
+  const weakBrands = [hostedByGoogle, nestedHost, nestedApply, copiedBrand, genericBrand, copiedLogo];
   const chinese = candidate(new URL('https://careers.合成科技.com.cn/jobs/PL-102').href, '中文招聘站职位', {
     employer: '杭州合成科技有限公司',
   });
   const tokenFab = candidate('https://www.tokenfab.cn/join/jobs', '仅有站标的官网职位', { employer: null });
+  const microsoft = candidate('https://apply.careers.microsoft.com/careers?pid=123', '微软招聘入口职位', { employer: 'Microsoft' });
   const board = candidate(maimai, '脉脉原帖');
   const responses = {
     公司社招官网: result([repost, publisher, anonymous, hosted, shared, brandedBoard]), 脉脉: result([board]), 'BOSS 直聘': result(),
@@ -283,6 +285,7 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
       '<title>合成科技社会招聘</title><header><a href="/"><img alt="合成科技"></a></header>')],
     [tokenFab.url, html(tokenFab).replace('<title>null 招聘</title>', '<title>TokenFab 招聘</title>')
       .replace('alt="null"', 'alt="TokenFab"').replace('<p>招聘主体：null</p>', '')],
+    [microsoft.url, html(microsoft)],
     [board.url, html(board, { id: 'PL-101' })],
   ]));
   const { page } = await run();
@@ -299,10 +302,11 @@ test('JS-07-05 官网候选必须能证明发布方，转载或未知发布方�
   await assertLeads(page, [repost, publisher, anonymous, hosted, shared, brandedBoard]);
   responses.公司社招官网 = result(weakBrands);
   await assertLeads((await run()).page, weakBrands);
-  responses.公司社招官网 = result([chinese, tokenFab]);
+  responses.公司社招官网 = result([chinese, tokenFab, microsoft]);
   const trusted = (await run()).page.split('<h2>待核验职位</h2>')[0];
   assert.match(trusted, /中文招聘站职位/);
   assert.match(trusted, /仅有站标的官网职位/);
+  assert.match(trusted, /微软招聘入口职位/);
 });
 
 test('JS-07-06 本机读到的 HTTP 200 验证墙也标为来源受限，普通登录链接与公开摘要照常展示', async t => {
@@ -317,7 +321,7 @@ test('JS-07-06 本机读到的 HTTP 200 验证墙也标为来源受限，普通�
   const pages = new Map([
     [blocked.url, '<title>官网职位</title><main><p>请先登录，查看职位详情</p></main>'],
     [readable.url, html(readable, { extra: '<p><a href="/login">登录</a></p>' })],
-    [summary.url, '<title>只有摘要的职位</title><main><p>仅展示普通摘要</p></main><footer>登录后查看投递进度</footer>'],
+    [summary.url, '<title>只有摘要的职位</title><main><p>仅展示普通摘要</p></main><footer>登录后查看投递进度。Please log in to see your application progress.</footer>'],
     [challenge.url, '<title>Human verification</title><main><p>Please verify that you are human</p></main>'],
   ]);
   const { run } = await fixture(t, replies, pages);
@@ -330,8 +334,10 @@ test('JS-07-06 本机读到的 HTTP 200 验证墙也标为来源受限，普通�
   assert.match(leads, /官网受限职位[\s\S]*只有摘要的职位/);
 
   pages.set(challenge.url, '<title>Just a moment...</title><main><p>Enable JavaScript and cookies to continue</p></main>');
-  pages.set(summary.url, '<title>Job details</title><main><p>Please, sign in to view the full job description.</p></main>');
+  pages.set(blocked.url, '<title>职位信息</title><main><p>您需要先登录才能查看职位详情</p></main>');
+  pages.set(summary.url, '<title>Job details</title><main><p>Please log in to see the full job description.</p></main>');
   const retry = await run();
+  assert.match(retry.page, /公司社招官网 · 未完成（访问受限）/);
   assert.match(retry.page, /脉脉 · 未完成（访问受限）/);
   assert.match(retry.page, /BOSS 直聘 · 未完成（访问受限）/);
 });
