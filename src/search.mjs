@@ -121,7 +121,7 @@ export function createSearchRunner({ db, jobs, settings, discover, processVerifi
             const ids = processed.map(job => jobs.saveDiscoveredJob(job, { runId: id, observedAt }));
             const saved = [...new Map(ids.map(jobId => {
               const job = jobs.getJob(jobId);
-              const { sourceJds, ...summary } = job;
+              const { sourceJds, manualJds, ...summary } = job;
               return [job.id, { ...summary, activity: jobActivity(job, id) }];
             })).values()].sort((left, right) => Number(Boolean(right.activity)) - Number(Boolean(left.activity)));
             finish.run(status, JSON.stringify({ sources, verified: saved, leads }), null, id);

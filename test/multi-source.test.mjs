@@ -215,3 +215,32 @@ test('一个来源执行失败时，另一来源的公开 JD 仍可保存并查�
   assert.match(page, /BOSS 直聘 · 已完成 · 1 条已核实 JD/);
   assert.match(await get(jobLinks(page, readable.title)[0]), /维护生产 Kubernetes 集群/);
 });
+
+test('手动导入和搜索用强证据合并，保留手动原文、旧链接和投递', async t => {
+  const first = candidate(official);
+  const second = candidate('https://careers.example.org/jobs/PL-202', '容器研发');
+  const { run, get, post } = await fixture(t, {
+    公司社招官网: result([first, second]), 脉脉: result(), 'BOSS 直聘': result(),
+  }, new Map([[first.url, html(first, { id: 'PL-101' })], [second.url, html(second)]]));
+  const manual = `平台工程师\n招聘主体：${company}\n招聘编号：PL-101\n职责：手动记录的原文`;
+  const noEvidence = `平台工程师\n招聘主体：${company}\n职责：另一条同名职位`;
+  const imported = await post('/jobs', { jd: manual });
+  const manualPath = imported.headers.get('location');
+  assert.equal((await post(`${manualPath}/application`)).status, 303);
+  await post('/jobs', { jd: noEvidence });
+
+  const resultPage = await run();
+  assert.deepEqual(jobLinks(resultPage.page, first.title), [manualPath]);
+  assert.equal(jobLinks(await get('/'), first.title).length, 2);
+  const detail = await get(manualPath);
+  assert.match(detail, /手动记录的原文/);
+  assert.match(detail, /维护生产 Kubernetes 集群/);
+  assert.match(detail, /已投递/);
+
+  const discoveredPath = jobLinks(resultPage.page, second.title)[0];
+  const pasted = `容器研发\n招聘主体：${company}\nJD 来源：${second.url}\n这段来自使用者的原始粘贴`;
+  const afterSearch = await post('/jobs', { jd: pasted });
+  assert.equal(afterSearch.headers.get('location'), discoveredPath);
+  assert.equal(jobLinks(await get('/'), second.title).length, 1);
+  assert.match(await get(discoveredPath), /这段来自使用者的原始粘贴/);
+});

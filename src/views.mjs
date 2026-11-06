@@ -78,7 +78,7 @@ export function renderHome(jobs) {
 }
 
 export function renderJob(job, application, interviewProgress = '') {
-  const { id, jd, sources, conflicts, sourceJds } = job;
+  const { id, jd, sources, conflicts, sourceJds, manualJds } = job;
   const title = job.title || jobTitle(jd);
   const sourceContent = sources?.length
     ? `<section><h2>JD 来源</h2><ul>${sources.map(source =>
@@ -91,6 +91,9 @@ export function renderJob(job, application, interviewProgress = '') {
     <summary>${sourceLabels[source.kind]} · ${escapeHtml(source.locator ?? title)}</summary>
     <pre><code>${escapeHtml(jd)}</code></pre>
   </details>`).join('') : '';
+  const manual = sources?.length && manualJds?.length ? `<section><h2>手动导入的 JD</h2>
+    ${manualJds.map(text => `<pre><code>${escapeHtml(text)}</code></pre>`).join('')}
+  </section>` : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
@@ -108,5 +111,6 @@ ${conflicting}
   <h2>JD 正文</h2>
   <pre><code>${escapeHtml(jd)}</code></pre>
   ${originalJds}
-</section>`);
+</section>
+${manual}`);
 }

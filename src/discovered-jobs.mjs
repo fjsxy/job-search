@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { observationKeys } from './job-sources.mjs';
+import { manualIdentity, observationKeys } from './job-sources.mjs';
 
 function comparableJob(jd) {
   // 页面时间、跟踪链接和招聘编号只描述出处；职责、要求及职位字段才决定 JD 是否有变化。
@@ -25,6 +25,15 @@ export function createDiscoveryStore(db) {
     CREATE INDEX IF NOT EXISTS job_observations_publisher ON job_observations (publisher_key);
     CREATE INDEX IF NOT EXISTS job_observations_owned ON job_observations (owned_url_key);
     CREATE INDEX IF NOT EXISTS job_observations_cited ON job_observations (cited_url_key);
+    CREATE TABLE IF NOT EXISTS manual_jds (
+      job_id TEXT NOT NULL REFERENCES jobs (id),
+      jd TEXT NOT NULL,
+      publisher_key TEXT,
+      owned_url_key TEXT
+    );
+    CREATE INDEX IF NOT EXISTS manual_jds_job ON manual_jds (job_id);
+    CREATE INDEX IF NOT EXISTS manual_jds_publisher ON manual_jds (publisher_key);
+    CREATE INDEX IF NOT EXISTS manual_jds_owned ON manual_jds (owned_url_key);
     CREATE TABLE IF NOT EXISTS job_aliases (
       id TEXT PRIMARY KEY NOT NULL,
       job_id TEXT NOT NULL REFERENCES jobs (id)
@@ -41,14 +50,24 @@ export function createDiscoveryStore(db) {
   const selectObservations = db.prepare('SELECT * FROM job_observations WHERE job_id = ? ORDER BY rowid');
   const selectObservation = db.prepare('SELECT * FROM job_observations WHERE job_id = ? AND source_key = ?');
   const relatedJobs = db.prepare(`
+    WITH related(id) AS (
+      SELECT job_id FROM job_observations
+      WHERE source_key = ? OR publisher_key = ? OR owned_url_key IN (?, ?) OR cited_url_key = ?
+      UNION
+      SELECT job_id FROM manual_jds WHERE publisher_key = ? OR owned_url_key = ?
+    )
     SELECT jobs.id, applications.id AS applicationId
-    FROM jobs JOIN job_observations AS observation ON observation.job_id = jobs.id
+    FROM related JOIN jobs ON jobs.id = related.id
     LEFT JOIN applications ON applications.job_id = jobs.id
-    WHERE observation.source_key = ? OR observation.publisher_key = ?
-      OR observation.owned_url_key IN (?, ?) OR observation.cited_url_key = ?
-    GROUP BY jobs.id
-    ORDER BY applications.id IS NOT NULL DESC, jobs.rowid
+    ORDER BY applications.id IS NOT NULL DESC,
+      EXISTS (SELECT 1 FROM manual_jds WHERE job_id = jobs.id) DESC, jobs.rowid
   `);
+  const insertManual = db.prepare('INSERT INTO manual_jds (job_id, jd, publisher_key, owned_url_key) VALUES (?, ?, ?, ?)');
+  const selectManual = db.prepare('SELECT jd FROM manual_jds WHERE job_id = ? ORDER BY rowid');
+  const verifiedMatchForManual = db.prepare(`
+    SELECT DISTINCT job_id AS id FROM job_observations WHERE publisher_key = ? OR owned_url_key = ?
+  `);
+  const moveManual = db.prepare('UPDATE manual_jds SET job_id = ? WHERE job_id = ?');
   const insertJob = db.prepare('INSERT INTO jobs (id, jd) VALUES (?, ?)');
   const insertDiscovery = db.prepare('INSERT INTO discovered_jobs (job_id, source_key, details) VALUES (?, ?, ?)');
   const selectDiscovery = db.prepare(`
@@ -75,6 +94,16 @@ export function createDiscoveryStore(db) {
     saveObservation.run(job_id, key.source, key.publisher, key.owned, key.cited, jd, details, JSON.stringify([record.source.url]));
   }
 
+  const legacyManual = db.prepare(`
+    SELECT id, jd FROM jobs
+    WHERE NOT EXISTS (SELECT 1 FROM discovered_jobs WHERE job_id = jobs.id)
+      AND NOT EXISTS (SELECT 1 FROM manual_jds WHERE job_id = jobs.id)
+  `).all();
+  for (const { id, jd } of legacyManual) {
+    const { publisher, owned } = manualIdentity(jd);
+    insertManual.run(id, jd, publisher, owned);
+  }
+
   function writeObservation(id, { source_key, publisher_key, owned_url_key, cited_url_key, jd, details, urls }) {
     const previous = selectObservation.get(id, source_key);
     const allUrls = [...new Set([...JSON.parse(previous?.urls ?? '[]'), ...JSON.parse(urls)])];
@@ -94,6 +123,7 @@ export function createDiscoveryStore(db) {
       `).run(keeper.applicationId, keeper.applicationId, duplicate.applicationId);
       db.prepare('DELETE FROM applications WHERE id = ?').run(duplicate.applicationId);
     }
+    moveManual.run(keeper.id, duplicate.id);
     moveAliases.run(keeper.id, duplicate.id);
     addAlias.run(duplicate.id, keeper.id);
     removeObservations.run(duplicate.id);
@@ -102,6 +132,23 @@ export function createDiscoveryStore(db) {
   }
 
   return {
+    addManual(jd) {
+      const { publisher, owned } = manualIdentity(jd);
+      // 已有且唯一的公开核实记录可以直接接收原文。匹配有歧义时保存为独立手动职位。
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const matches = verifiedMatchForManual.all(publisher, owned);
+        const existing = matches.length === 1 && matches[0].id;
+        const id = existing || randomUUID();
+        if (!existing) insertJob.run(id, jd);
+        insertManual.run(id, jd, matches.length > 1 ? null : publisher, matches.length > 1 ? null : owned);
+        db.exec('COMMIT');
+        return id;
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
     readSources(id) {
       const observations = selectObservations.all(id).map(observation => ({
         ...JSON.parse(observation.details), jd: observation.jd, urls: JSON.parse(observation.urls),
@@ -113,16 +160,19 @@ export function createDiscoveryStore(db) {
         return values.size > 1 ? [label] : [];
       });
       return {
-        sources, conflicts, sourceJds: observations.map(({ source, jd }) => ({ source, jd })),
+        sources, conflicts, manualJds: selectManual.all(id).map(({ jd }) => jd), sourceJds: observations.map(({ source, jd }) => ({ source, jd })),
       };
     },
     save({ jd, ...details }, { runId, observedAt }) {
       const key = observationKeys(details);
-      const related = relatedJobs.all(key.source, key.publisher, key.cited, key.owned, key.owned);
+      const related = relatedJobs.all(key.source, key.publisher, key.cited, key.owned, key.owned, key.publisher, key.owned);
       const [keeper, ...duplicates] = related;
       const id = keeper?.id ?? randomUUID();
       const previousDisplay = keeper && selectDiscovery.get(id);
-      const previousDetails = related.map(job => JSON.parse(selectDiscovery.get(job.id).details));
+      const previousDetails = related.flatMap(job => {
+        const record = selectDiscovery.get(job.id);
+        return record ? [JSON.parse(record.details)] : [];
+      });
       if (keeper) {
         for (const duplicate of duplicates) mergeJobs(keeper, duplicate);
       }
@@ -145,12 +195,12 @@ export function createDiscoveryStore(db) {
       const serialized = JSON.stringify({ ...display, ...activity });
       if (keeper) {
         if (display === details) updateJob.run(jd, id);
-        updateDiscovery.run(serialized, id);
       } else {
         insertJob.run(id, jd);
-        // 保留旧表的原始约束，实际查找使用 job_observations 的同一性键。
-        insertDiscovery.run(id, id, serialized);
       }
+      if (prior) updateDiscovery.run(serialized, id);
+      // 手动职位首次核实时新建发现记录，保留原 ID 和手动原文。
+      else insertDiscovery.run(id, id, serialized);
       writeObservation(id, {
         source_key: key.source, publisher_key: key.publisher, owned_url_key: key.owned, cited_url_key: key.cited,
         jd, details: JSON.stringify(details), urls: JSON.stringify([details.source.url]),

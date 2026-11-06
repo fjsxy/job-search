@@ -37,9 +37,9 @@ export function createJobStore(db) {
   const discoveries = createDiscoveryStore(db);
   const resolveJobId = db.prepare('SELECT job_id AS id FROM job_aliases WHERE id = ?');
   const canonical = id => resolveJobId.get(id)?.id ?? id;
-  const insertJob = db.prepare('INSERT INTO jobs (id, jd) VALUES (?, ?)');
   const selectJobs = db.prepare(`
-    SELECT jobs.id, jobs.jd, discovered_jobs.details, applications.id IS NOT NULL AS hasApplication
+    SELECT jobs.id, jobs.jd, discovered_jobs.details, applications.id IS NOT NULL AS hasApplication,
+      EXISTS (SELECT 1 FROM manual_jds WHERE job_id = jobs.id) AS isManual
     FROM jobs LEFT JOIN discovered_jobs ON discovered_jobs.job_id = jobs.id
     LEFT JOIN applications ON applications.job_id = jobs.id
     ORDER BY COALESCE(json_extract(discovered_jobs.details, '$.changedAt'),
@@ -57,19 +57,15 @@ export function createJobStore(db) {
   const selectApplication = db.prepare('SELECT id, job_id AS jobId FROM applications WHERE job_id = ?');
 
   return {
-    addManualJob(jd) {
-      // 仅将空白判断用于校验，写入时保存完整的 JD。
-      const id = randomUUID();
-      insertJob.run(id, jd);
-      return id;
-    },
-    listJobs: () => selectJobs.all().map(({ id, jd, details, hasApplication }) => ({
-      ...JSON.parse(details ?? '{}'), id, jd, hasApplication: Boolean(hasApplication),
+    addManualJob: discoveries.addManual,
+    listJobs: () => selectJobs.all().map(({ id, jd, details, hasApplication, isManual }) => ({
+      ...JSON.parse(details ?? '{}'), id, jd, hasApplication: Boolean(hasApplication), isManual: Boolean(isManual),
     })),
     getJob(id) {
       const row = selectJob.get(canonical(id));
       if (!row) return undefined;
-      return { ...JSON.parse(row.details ?? '{}'), id: row.id, jd: row.jd, ...discoveries.readSources(row.id) };
+      const sources = discoveries.readSources(row.id);
+      return { ...JSON.parse(row.details ?? '{}'), id: row.id, jd: row.jd, isManual: sources.manualJds.length > 0, ...sources };
     },
     saveDiscoveredJob: discoveries.save,
     getApplication: (jobId) => selectApplication.get(canonical(jobId)),
