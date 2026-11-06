@@ -6,12 +6,16 @@ function statusLabel(status) {
   return { running: '进行中', failed: '失败', partial: '部分来源失败', completed: '已完成', restricted: '未完成（访问受限）' }[status];
 }
 
+function scheduleLabel({ scheduledDate }) {
+  return scheduledDate ? ` · 定时搜索（北京时间 ${escapeHtml(scheduledDate)}）` : '';
+}
+
 export function createSearchRoutes({ settings, search, validateDirection, screening }) {
   return async (request, response, path) => {
     if (request.method === 'GET' && path === '/search') {
       const { direction, fastMode } = settings.get();
       const runs = search.listRuns().map(run =>
-        `<li><a href="/search/runs/${run.id}">${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</a></li>`).join('');
+        `<li><a href="/search/runs/${run.id}">${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}${scheduleLabel(run)}</a></li>`).join('');
       sendHtml(response, 200, renderPage('职位搜索', `
         <h1>职位搜索</h1>
         <section><h2>公开搜索的岗位方向</h2>
@@ -30,6 +34,7 @@ export function createSearchRoutes({ settings, search, validateDirection, screen
           </select>`)}
         </section>
         <section><h2>公司社招官网、脉脉和 BOSS 直聘</h2>
+        <p>每天北京时间 09:30 自动搜索，关闭浏览器后仍会执行。</p>
         ${renderPostForm('/search/runs', '开始搜索')}
         <h3>最近搜索</h3><ul>${runs}</ul></section>`));
       return true;
@@ -61,7 +66,7 @@ export function createSearchRoutes({ settings, search, validateDirection, screen
     const verified = run.result?.verified.map(screening.decorate).filter(job => job.screening?.status !== 'excluded');
     sendHtml(response, 200, renderPage('搜索结果', `
       <h1>职位搜索结果</h1>
-      <p>搜索 · ${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</p>
+      <p>搜索 · ${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}${scheduleLabel(run)}</p>
       <p><a href="/search/runs/${run.id}">刷新状态</a> · <a href="/search">返回职位搜索</a></p>
       ${run.result ? renderSources(run) : ''}
       ${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}

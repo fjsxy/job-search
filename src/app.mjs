@@ -8,6 +8,7 @@ import { createReviewRunner } from './reviews.mjs';
 import { createScreening } from './screening.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
+import { startSearchSchedule } from './search-schedule.mjs';
 import { createSourceDiscovery, createSearchRunner } from './search.mjs';
 import { createSettings } from './settings.mjs';
 import { createSubscriptionClient, DEFAULT_DATA_DIR, subscriptionHome } from './subscription.mjs';
@@ -20,7 +21,7 @@ function loopbackUrl(port) {
 }
 
 export async function startApp({
-  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, codexHome, readOfficialPage,
+  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, codexHome, readOfficialPage, searchClock,
   subscription = createSubscriptionClient({ executable: codexExecutable, codexHome: subscriptionHome(dataDir, codexHome) }),
 } = {}) {
   // 由本机进程持有数据库，浏览器关闭时不影响数据连接。
@@ -63,9 +64,11 @@ export async function startApp({
     throw error;
   }
 
+  const stopSearchSchedule = startSearchSchedule(search, searchClock);
   return {
     origin: loopbackUrl(server.address().port).origin,
     async close() {
+      stopSearchSchedule();
       await Promise.all([
         new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
         search.close(),
