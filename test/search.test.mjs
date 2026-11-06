@@ -41,7 +41,12 @@ if (process.argv[2] === 'login') {
 } else {
   const record = { args: process.argv.slice(2), input: fs.readFileSync(0, 'utf8') };
   fs.appendFileSync(${JSON.stringify(captured)}, JSON.stringify(record) + '\\n');
-  for (const event of JSON.parse(fs.readFileSync(${JSON.stringify(replies)}, 'utf8'))) {
+  const official = record.input.startsWith('公司社招官网');
+  const emptyBoard = ${JSON.stringify(success().map(event => event.item?.type === 'web_search'
+    ? { ...event, item: { ...event.item, action: { type: 'search', queries: ['site:maimai.cn 杭州', 'site:zhipin.com 杭州'] } } }
+    : event))};
+  const events = official ? JSON.parse(fs.readFileSync(${JSON.stringify(replies)}, 'utf8')) : emptyBoard;
+  for (const event of events) {
     console.log(JSON.stringify(event));
   }
 }`, { mode: 0o700 });
@@ -75,12 +80,13 @@ test('JS-04-01 官网搜索只发送确认方向和筛选条件，并统一使�
   await waitForRun(origin, standard.headers.get('location'), /已完成/);
 
   const calls = (await readFile(captured, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 2);
-  for (const [index, { args, input }] of calls.entries()) {
+  assert.equal(calls.length, 6);
+  assert.equal(calls.filter(({ args }) => args.includes('service_tier="fast"')).length, 3);
+  assert.equal(calls.filter(({ args }) => args.includes('service_tier="default"')).length, 3);
+  for (const { args, input } of calls) {
     for (const arg of ['gpt-6.1-sol', 'forced_login_method="chatgpt"', 'model_reasoning_effort="xhigh"', 'web_search="live"']) {
       assert.ok(args.includes(arg), arg);
     }
-    assert.ok(args.includes(index === 0 ? 'service_tier="fast"' : 'service_tier="default"'));
     const fields = JSON.parse(input.split('\n输入：')[1]);
     assert.deepEqual(fields, {
       direction: '容器平台工程',

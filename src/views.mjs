@@ -1,3 +1,5 @@
+import { sourceLabels } from './job-sources.mjs';
+
 // HTML 文本和属性中的外部输入统一转义。
 export function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
@@ -51,13 +53,18 @@ function jobTitle(jd) {
   return characters.length > 120 ? `${characters.slice(0, 120).join('')}…` : firstLine;
 }
 
+function discoveryDates({ firstDiscoveredAt, changedAt }) {
+  const date = timestamp => `<time datetime="${escapeHtml(timestamp)}">${escapeHtml(timestamp)}</time>`;
+  return `${firstDiscoveredAt ? ` · 首次发现于 ${date(firstDiscoveredAt)}` : ''}${changedAt ? ` · JD 更新于 ${date(changedAt)}` : ''}`;
+}
+
 export function renderHome(jobs) {
-  const jobList = jobs.map(({ id, jd }) =>
-    `<li><a href="/jobs/${escapeHtml(id)}">${escapeHtml(jobTitle(jd))}</a></li>`).join('\n');
+  const jobList = jobs.map(job =>
+    `<li><a href="/jobs/${escapeHtml(job.id)}">${escapeHtml(jobTitle(job.jd))}</a>${discoveryDates(job)}</li>`).join('\n');
 
   return renderPage('职位', `
 <h1>职位</h1>
-<p><a href="/search">官网搜索与 Agent 设置</a></p>
+<p><a href="/search">职位搜索与 Agent 设置</a></p>
 <section>
   <h2>已保存职位</h2>
   ${jobList ? `<ul>${jobList}</ul>` : '<p>还没有保存的职位。</p>'}
@@ -71,18 +78,28 @@ export function renderHome(jobs) {
 }
 
 export function renderJob(job, application, interviewProgress = '') {
-  const { id, jd, source } = job;
+  const { id, jd, sources, conflicts, sourceJds } = job;
   const title = job.title || jobTitle(jd);
-  const sourceContent = source
-    ? `<section><h2>JD 来源</h2><p><a href="${escapeHtml(source.url)}">公司社招官网</a> · ${escapeHtml(source.locator ?? title)}</p></section>`
+  const sourceContent = sources?.length
+    ? `<section><h2>JD 来源</h2><ul>${sources.map(source =>
+      `<li><a href="${escapeHtml(source.url)}">${sourceLabels[source.kind]}</a> · ${escapeHtml(source.locator ?? title)}</li>`).join('')}</ul></section>`
     : '';
+  const conflicting = conflicts?.length
+    ? `<p><strong>待确认</strong> · 来源间的${escapeHtml(conflicts.join('、'))}不一致，请核对各出处。</p>`
+    : '';
+  const originalJds = sourceJds?.length > 1 ? sourceJds.map(({ source, jd }) => `<details>
+    <summary>${sourceLabels[source.kind]} · ${escapeHtml(source.locator ?? title)}</summary>
+    <pre><code>${escapeHtml(jd)}</code></pre>
+  </details>`).join('') : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
 <h1>${escapeHtml(title)}</h1>
+${job.firstDiscoveredAt ? `<p>公开搜索${discoveryDates(job)}</p>` : ''}
 ${sourceContent}
+${conflicting}
 <section>
   <h2>投递</h2>
   ${applicationContent}
@@ -90,5 +107,6 @@ ${sourceContent}
 <section>
   <h2>JD 正文</h2>
   <pre><code>${escapeHtml(jd)}</code></pre>
+  ${originalJds}
 </section>`);
 }

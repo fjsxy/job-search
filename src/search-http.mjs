@@ -1,8 +1,9 @@
 import { HttpError, readForm, redirect, sendHtml } from './http.mjs';
+import { activityLabels, sourceLabels } from './job-sources.mjs';
 import { escapeHtml, renderPage, renderPostForm } from './views.mjs';
 
 function statusLabel(status) {
-  return { running: '进行中', failed: '失败', completed: '已完成', restricted: '未完成（访问受限）' }[status];
+  return { running: '进行中', failed: '失败', partial: '部分来源失败', completed: '已完成', restricted: '未完成（访问受限）' }[status];
 }
 
 export function createSearchRoutes({ settings, search }) {
@@ -11,8 +12,8 @@ export function createSearchRoutes({ settings, search }) {
       const { direction, fastMode } = settings.get();
       const runs = search.listRuns().map(run =>
         `<li><a href="/search/runs/${run.id}">${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</a></li>`).join('');
-      sendHtml(response, 200, renderPage('官网搜索', `
-        <h1>官网搜索</h1>
+      sendHtml(response, 200, renderPage('职位搜索', `
+        <h1>职位搜索</h1>
         <section><h2>公开搜索的岗位方向</h2>
         <p>请只填写用于公开搜索的岗位方向，不要填写简历或个人信息。</p>
         ${renderPostForm('/search/direction', '确认岗位方向', `
@@ -28,8 +29,8 @@ export function createSearchRoutes({ settings, search }) {
             <option value="standard"${!fastMode ? ' selected' : ''}>Standard</option>
           </select>`)}
         </section>
-        <section><h2>公司社招官网</h2>
-        ${renderPostForm('/search/runs', '开始官网搜索')}
+        <section><h2>公司社招官网、脉脉和 BOSS 直聘</h2>
+        ${renderPostForm('/search/runs', '开始搜索')}
         <h3>最近搜索</h3><ul>${runs}</ul></section>`));
       return true;
     }
@@ -60,17 +61,44 @@ export function createSearchRoutes({ settings, search }) {
     const run = search.getRun(runPath[1]);
     if (!run) return false;
     sendHtml(response, 200, renderPage('搜索结果', `
-      <h1>官网搜索结果</h1>
-      <p>公司社招官网 · ${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</p>
-      <p><a href="/search/runs/${run.id}">刷新状态</a> · <a href="/search">返回官网搜索</a></p>
+      <h1>职位搜索结果</h1>
+      <p>搜索 · ${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</p>
+      <p><a href="/search/runs/${run.id}">刷新状态</a> · <a href="/search">返回职位搜索</a></p>
+      ${run.result ? renderSources(run) : ''}
       ${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}
-      ${run.result ? `<section><h2>已核实 JD</h2>
-        ${run.result.verified.length ? `<ul>${run.result.verified.map(job => `<li><a href="/jobs/${job.id}">${escapeHtml(job.title)}</a> · <a href="${escapeHtml(job.source.url)}">官网原文</a></li>`).join('')}</ul>` : '<p>本次没有核实的 JD。</p>'}
-      </section>
-      <section><h2>待核验职位</h2>
-        ${run.result.leads.length ? `<ul>${run.result.leads.map(lead => `<li><a href="${escapeHtml(lead.source.url)}">${escapeHtml(lead.title)}</a></li>`).join('')}</ul>` : '<p>本次没有待核验的线索。</p>'}
-      </section>` : ''}
+      ${run.result ? renderResults(run.result) : ''}
       ${run.status === 'running' ? '<p>关闭页面后搜索仍会继续。</p>' : renderPostForm('/search/runs', '重新搜索')}`));
     return true;
   };
+}
+
+function renderSources({ result, status }) {
+  // 早期的官网搜索历史只有一个来源，旧结果仍可打开。
+  const sources = result.sources ?? [{
+    kind: 'official', status, verifiedCount: result.verified.length, leadCount: result.leads.length,
+  }];
+  const rows = sources.map(({ kind, status, verifiedCount, leadCount, error }) => {
+    const counts = status === 'completed' && !verifiedCount && !leadCount ? ' · 零结果'
+      : status === 'failed' ? '' : ` · ${verifiedCount} 条已核实 JD，${leadCount} 条待核验`;
+    return `<li>${sourceLabels[kind]} · ${statusLabel(status)}${counts}${error ? ` · ${escapeHtml(error)}` : ''}</li>`;
+  }).join('');
+  return `<section><h2>来源状态</h2><ul>${rows}</ul></section>`;
+}
+
+function renderResults({ verified, leads }) {
+  const rows = verified.map(job => {
+    const activity = job.activity ? ` · ${activityLabels[job.activity]}` : '';
+    const conflicts = job.conflicts?.length ? ` · 待确认（${escapeHtml(job.conflicts.join('、'))}）` : '';
+    const links = (job.sources ?? [job.source]).map(source =>
+      `<a href="${escapeHtml(source.url)}">${sourceLabels[source.kind]}原文</a>`).join(' · ');
+    return `<li><a href="/jobs/${job.id}">${escapeHtml(job.title)}</a>${activity}${conflicts} · ${links}</li>`;
+  }).join('');
+  const leadRows = leads.map(lead =>
+    `<li><a href="${escapeHtml(lead.source.url)}">${escapeHtml(lead.title)}</a> · ${sourceLabels[lead.source.kind]}</li>`).join('');
+  return `<section><h2>已核实 JD</h2>
+    ${rows ? `<ul>${rows}</ul>` : '<p>本次没有核实的 JD。</p>'}
+  </section>
+  <section><h2>待核验职位</h2>
+    ${leadRows ? `<ul>${leadRows}</ul>` : '<p>本次没有待核验的线索。</p>'}
+  </section>`;
 }

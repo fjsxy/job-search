@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createDiscoveryStore } from './discovered-jobs.mjs';
 
 export function openDatabase(dataDir) {
   // 私有目录同时包含 SQLite 主文件和恢复事务所需的临时文件。
@@ -33,16 +34,22 @@ export function createJobStore(db) {
     );
   `);
 
+  const discoveries = createDiscoveryStore(db);
+  const resolveJobId = db.prepare('SELECT job_id AS id FROM job_aliases WHERE id = ?');
+  const canonical = id => resolveJobId.get(id)?.id ?? id;
   const insertJob = db.prepare('INSERT INTO jobs (id, jd) VALUES (?, ?)');
-  const selectJobs = db.prepare('SELECT id, jd FROM jobs ORDER BY rowid DESC');
+  const selectJobs = db.prepare(`
+    SELECT jobs.id, jobs.jd, discovered_jobs.details, applications.id IS NOT NULL AS hasApplication
+    FROM jobs LEFT JOIN discovered_jobs ON discovered_jobs.job_id = jobs.id
+    LEFT JOIN applications ON applications.job_id = jobs.id
+    ORDER BY COALESCE(json_extract(discovered_jobs.details, '$.changedAt'),
+      json_extract(discovered_jobs.details, '$.firstDiscoveredAt'),
+      json_extract(discovered_jobs.details, '$.source.verifiedAt')) DESC, jobs.rowid DESC
+  `);
   const selectJob = db.prepare(`
     SELECT jobs.id, jobs.jd, discovered_jobs.details
     FROM jobs LEFT JOIN discovered_jobs ON discovered_jobs.job_id = jobs.id WHERE jobs.id = ?
   `);
-  const getDiscoveredJob = db.prepare('SELECT job_id AS id FROM discovered_jobs WHERE source_key = ?');
-  const insertDiscovery = db.prepare('INSERT INTO discovered_jobs (job_id, source_key, details) VALUES (?, ?, ?)');
-  const updateDiscovery = db.prepare('UPDATE discovered_jobs SET details = ? WHERE job_id = ?');
-  const updateJob = db.prepare('UPDATE jobs SET jd = ? WHERE id = ?');
   const insertApplication = db.prepare(`
     INSERT INTO applications (id, job_id) VALUES (?, ?)
     ON CONFLICT (job_id) DO NOTHING
@@ -56,29 +63,16 @@ export function createJobStore(db) {
       insertJob.run(id, jd);
       return id;
     },
-    listJobs: () => selectJobs.all(),
+    listJobs: () => selectJobs.all().map(({ id, jd, details, hasApplication }) => ({
+      ...JSON.parse(details ?? '{}'), id, jd, hasApplication: Boolean(hasApplication),
+    })),
     getJob(id) {
-      const row = selectJob.get(id);
+      const row = selectJob.get(canonical(id));
       if (!row) return undefined;
-      return { ...JSON.parse(row.details ?? '{}'), id: row.id, jd: row.jd };
+      return { ...JSON.parse(row.details ?? '{}'), id: row.id, jd: row.jd, ...discoveries.readSources(row.id) };
     },
-    saveDiscoveredJob({ jd, ...details }) {
-      // 同一来源重复返回同一岗位时保留职位 ID，已有投递继续关联该职位。
-      const { kind, url, jobKey, locator } = details.source;
-      const key = JSON.stringify([kind, url, jobKey || locator, jobKey ? null : details.city]);
-      const existing = getDiscoveredJob.get(key);
-      const serialized = JSON.stringify(details);
-      if (existing) {
-        updateJob.run(jd, existing.id);
-        updateDiscovery.run(serialized, existing.id);
-        return existing.id;
-      }
-      const id = randomUUID();
-      insertJob.run(id, jd);
-      insertDiscovery.run(id, key, serialized);
-      return id;
-    },
-    getApplication: (jobId) => selectApplication.get(jobId),
+    saveDiscoveredJob: discoveries.save,
+    getApplication: (jobId) => selectApplication.get(canonical(jobId)),
     registerApplication(jobId) {
       // 由 SQLite 的唯一约束处理重复提交，保留原投递 ID。
       insertApplication.run(randomUUID(), jobId);

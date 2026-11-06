@@ -6,7 +6,7 @@ import { handleInterviewRequest, renderInterviewProgress } from './interview-pag
 import { createInterviewStore } from './interviews.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
-import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
+import { createSourceDiscovery, createSearchRunner } from './search.mjs';
 import { createSettings } from './settings.mjs';
 import { createSubscriptionClient } from './subscription.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
@@ -32,7 +32,7 @@ export async function startApp({
     const interviews = createInterviewStore(db);
     const settings = createSettings(db);
     search = createSearchRunner({
-      db, jobs, settings, discover: createOfficialDiscovery(subscription, readOfficialPage),
+      db, jobs, settings, discover: createSourceDiscovery(subscription, readOfficialPage),
     });
     const searchRoutes = createSearchRoutes({ settings, search });
     server.on('request', async (request, response) => {
