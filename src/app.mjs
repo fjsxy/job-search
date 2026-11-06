@@ -3,7 +3,9 @@ import { createServer } from 'node:http';
 import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './http.mjs';
 import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
 import { createInterviewStore } from './interviews.mjs';
+import { createResume } from './resume.mjs';
 import { createReviewRunner } from './reviews.mjs';
+import { createScreening } from './screening.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
 import { createSearchRoutes } from './search-http.mjs';
 import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
@@ -25,23 +27,28 @@ export async function startApp({
   const db = openDatabase(dataDir);
   const server = createServer();
   let search;
+  let resume;
   let reviews;
 
   try {
     const jobs = createJobStore(db);
     const interviews = createInterviewStore(db);
     const settings = createSettings(db);
+    resume = createResume({ db, settings, subscription });
     reviews = createReviewRunner({ db, settings, subscription });
+    const screening = createScreening({ resume, subscription });
     search = createSearchRunner({
-      db, jobs, settings, discover: createOfficialDiscovery(subscription, readOfficialPage),
+      db, jobs, settings: { get: resume.getSearchSettings },
+      discover: createOfficialDiscovery(subscription, readOfficialPage),
+      processVerifiedJobs: screening.processVerifiedJobs,
     });
-    const searchRoutes = createSearchRoutes({ settings, search });
+    const searchRoutes = createSearchRoutes({ settings, search, validateDirection: resume.validateDirection, screening });
     server.on('request', async (request, response) => {
       try {
         protectLocalRequest(request, response, loopbackUrl(request.socket.localPort));
         const path = request.url.split('?', 1)[0];
-        if (!await searchRoutes(request, response, path)) {
-          await handleRequest(request, response, path, jobs, interviews, reviews);
+        if (!await resume.handle(request, response, path) && !await searchRoutes(request, response, path)) {
+          await handleRequest(request, response, path, jobs, interviews, reviews, screening);
         }
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
@@ -62,6 +69,7 @@ export async function startApp({
       await Promise.all([
         new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
         search.close(),
+        resume.close(),
         reviews.close(),
       ]);
       db.close();
@@ -69,9 +77,11 @@ export async function startApp({
   };
 }
 
-async function handleRequest(request, response, path, jobs, interviews, reviews) {
+async function handleRequest(request, response, path, jobs, interviews, reviews, screening) {
   if (request.method === 'GET' && path === '/') {
-    sendHtml(response, 200, renderHome(jobs.listJobs()));
+    const visible = jobs.listJobs().map(screening.decorate)
+      .filter(job => job.screening?.status !== 'excluded' || job.hasApplication);
+    sendHtml(response, 200, renderHome(visible));
     return;
   }
 
@@ -93,7 +103,7 @@ async function handleRequest(request, response, path, jobs, interviews, reviews)
     if (job) {
       const application = jobs.getApplication(job.id);
       const interviewProgress = application && renderInterviewProgress(job.id, interviews.listRounds(application.id));
-      sendHtml(response, 200, renderJob(job, application, interviewProgress));
+      sendHtml(response, 200, renderJob(screening.decorate(job), application, interviewProgress));
       return;
     }
   }
@@ -102,6 +112,9 @@ async function handleRequest(request, response, path, jobs, interviews, reviews)
   if (request.method === 'POST' && applicationPath) {
     const job = jobs.getJob(applicationPath[1]);
     if (job) {
+      if (screening.decorate(job).screening?.status === 'excluded' && !jobs.getApplication(job.id)) {
+        throw new HttpError(409, '此职位已退出自动筛选结果');
+      }
       jobs.registerApplication(job.id);
       redirect(response, `/jobs/${job.id}`);
       return;

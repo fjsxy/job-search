@@ -1,4 +1,5 @@
 import { parse } from 'parse5';
+import { verifiedJobFacts } from './job-criteria.mjs';
 import { publicUrl, readPublicPage } from './public-page.mjs';
 
 const skipped = new Set(['script', 'style', 'noscript', 'template', 'svg', 'head', 'nav']);
@@ -12,7 +13,6 @@ const comparable = text => normalize(text).replace(/^(?:[•·]|\d+[.)、])\s*/u
 const heading = /^(?:h[1-6])$/;
 const dutiesLabel = /^(?:(?:岗位|工作|职位)?职责|(?:Key )?Responsibilities?)(?=\s*[:：]|$)/i;
 const requirementsLabel = /^(?:(?:职位|岗位|任职|招聘|工作)?要求|(?:Minimum |Job )?(?:Qualifications|Requirements))(?=\s*[:：]|$)/i;
-const employerLabel = /^(?:招聘主体|招聘公司|雇主|用人单位|Employer)\s*[:：]\s*/i;
 const idLabel = /^(?:(?:职位|岗位|招聘)编号|Job ID)\s*[:：]\s*/i;
 const otherSection = /^(?:加分项|优先条件|投递方式|薪资待遇|职位亮点|工作福利|公司介绍|关于我们|Apply\b|Preferred Qualifications\b)/i;
 
@@ -129,23 +129,26 @@ export function createOfficialVerifier(readPage = readPublicPage) {
     const job = findPosition(document, candidate);
     if (!job) return { lead };
     const branding = (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? '').trim();
-    const cityEvidence = citedLine(candidate.city, job.metadata);
-    const districtEvidence = citedLine(candidate.district, job.metadata);
-    const salaryEvidence = citedLine(candidate.salaryQuote, job.metadata);
-    // 招聘主体必须有明确字段，站点品牌和客户名称只作为来源信息。
-    const employerEvidence = citedLine(candidate.employer, job.metadata.filter(line => employerLabel.test(line)));
+    const { employerEvidence, ...facts } = verifiedJobFacts(job.scope.slice(1).map(line => line.text), candidate);
+    const cityEvidence = citedLine(candidate.city, facts.locations);
+    const districtEvidence = citedLine(candidate.district, facts.locations);
+    const salaryEvidence = citedLine(candidate.salaryQuote, facts.salaries);
     source.publisherEvidence = branding || null;
     source.jobKey = citedId(candidate.jobKey, url, job.metadata);
     source.verifiedAt = new Date().toISOString();
     source.locator = title;
     const { duties, requirements } = job;
-    const jd = [title, ...job.metadata.slice(1), '岗位职责', ...duties, '任职要求', ...requirements].join('\n');
+    const jdLines = [title, ...job.metadata.slice(1), '岗位职责', ...duties, '任职要求', ...requirements];
+    for (const line of [employerEvidence, ...facts.locations, ...facts.salaries]) {
+      if (line && !jdLines.includes(line)) jdLines.push(line);
+    }
+    const jd = jdLines.join('\n');
     return { verified: {
-      title, employer: employerEvidence?.replace(employerLabel, '').trim() || null,
+      title, employer: employerEvidence ? facts.employers[0] : null,
       city: cityEvidence ? candidate.city.trim() : null,
       district: districtEvidence ? candidate.district.trim() : null,
       salaryQuote: salaryEvidence, employerEvidence, cityEvidence, districtEvidence,
-      duties, requirements, jd, source,
+      duties, requirements, jd, source, facts,
     } };
   };
 }
