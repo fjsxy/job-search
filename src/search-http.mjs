@@ -1,11 +1,11 @@
 import { HttpError, readForm, redirect, sendHtml } from './http.mjs';
-import { escapeHtml, renderPage, renderPostForm } from './views.mjs';
+import { escapeHtml, renderPage, renderPostForm, screeningLabel } from './views.mjs';
 
 function statusLabel(status) {
   return { running: '进行中', failed: '失败', completed: '已完成', restricted: '未完成（访问受限）' }[status];
 }
 
-export function createSearchRoutes({ settings, search }) {
+export function createSearchRoutes({ settings, search, validateDirection, screening }) {
   return async (request, response, path) => {
     if (request.method === 'GET' && path === '/search') {
       const { direction, fastMode } = settings.get();
@@ -14,7 +14,7 @@ export function createSearchRoutes({ settings, search }) {
       sendHtml(response, 200, renderPage('官网搜索', `
         <h1>官网搜索</h1>
         <section><h2>公开搜索的岗位方向</h2>
-        <p>请只填写用于公开搜索的岗位方向，不要填写简历或个人信息。</p>
+        <p><a href="/settings/resume">设置简历并提取候选方向</a>。请只填写用于公开搜索的岗位方向。</p>
         ${renderPostForm('/search/direction', '确认岗位方向', `
           <label for="direction">岗位方向</label>
           <textarea id="direction" name="direction" maxlength="500" rows="3" required>${escapeHtml(direction)}</textarea>`)}
@@ -35,9 +35,7 @@ export function createSearchRoutes({ settings, search }) {
     }
     if (request.method === 'POST' && path === '/search/direction') {
       const direction = (await readForm(request)).get('direction')?.trim();
-      if (!direction || direction.length > 500 || direction.includes('\0')) {
-        throw new HttpError(400, '请输入不超过 500 字的岗位方向');
-      }
+      validateDirection(direction);
       settings.saveDirection(direction);
       redirect(response, '/search');
       return true;
@@ -59,13 +57,14 @@ export function createSearchRoutes({ settings, search }) {
     if (request.method !== 'GET' || !runPath) return false;
     const run = search.getRun(runPath[1]);
     if (!run) return false;
+    const verified = run.result?.verified.map(screening.decorate).filter(job => job.screening?.status !== 'excluded');
     sendHtml(response, 200, renderPage('搜索结果', `
       <h1>官网搜索结果</h1>
       <p>公司社招官网 · ${statusLabel(run.status)} · ${run.fastMode ? 'Fast' : 'Standard'}</p>
       <p><a href="/search/runs/${run.id}">刷新状态</a> · <a href="/search">返回官网搜索</a></p>
       ${run.error ? `<p>${escapeHtml(run.error)}</p>` : ''}
       ${run.result ? `<section><h2>已核实 JD</h2>
-        ${run.result.verified.length ? `<ul>${run.result.verified.map(job => `<li><a href="/jobs/${job.id}">${escapeHtml(job.title)}</a> · <a href="${escapeHtml(job.source.url)}">官网原文</a></li>`).join('')}</ul>` : '<p>本次没有核实的 JD。</p>'}
+        ${verified.length ? `<ul>${verified.map(job => `<li><a href="/jobs/${job.id}">${escapeHtml(job.title)}</a>${screeningLabel(job) ? ` · ${screeningLabel(job)}` : ''} · <a href="${escapeHtml(job.source.url)}">官网原文</a></li>`).join('')}</ul>` : '<p>本次没有核实的 JD 进入筛选列表。</p>'}
       </section>
       <section><h2>待核验职位</h2>
         ${run.result.leads.length ? `<ul>${run.result.leads.map(lead => `<li><a href="${escapeHtml(lead.source.url)}">${escapeHtml(lead.title)}</a></li>`).join('')}</ul>` : '<p>本次没有待核验的线索。</p>'}

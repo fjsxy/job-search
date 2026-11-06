@@ -34,7 +34,13 @@ export function createJobStore(db) {
   `);
 
   const insertJob = db.prepare('INSERT INTO jobs (id, jd) VALUES (?, ?)');
-  const selectJobs = db.prepare('SELECT id, jd FROM jobs ORDER BY rowid DESC');
+  const selectJobs = db.prepare(`
+    SELECT jobs.id, jobs.jd, discovered_jobs.details, applications.id AS applicationId
+    FROM jobs
+    LEFT JOIN discovered_jobs ON discovered_jobs.job_id = jobs.id
+    LEFT JOIN applications ON applications.job_id = jobs.id
+    ORDER BY jobs.rowid DESC
+  `);
   const selectJob = db.prepare(`
     SELECT jobs.id, jobs.jd, discovered_jobs.details
     FROM jobs LEFT JOIN discovered_jobs ON discovered_jobs.job_id = jobs.id WHERE jobs.id = ?
@@ -56,7 +62,8 @@ export function createJobStore(db) {
       insertJob.run(id, jd);
       return id;
     },
-    listJobs: () => selectJobs.all(),
+    listJobs: () => selectJobs.all().map(({ id, jd, details, applicationId }) =>
+      ({ ...JSON.parse(details ?? '{}'), id, jd, hasApplication: Boolean(applicationId) })),
     getJob(id) {
       const row = selectJob.get(id);
       if (!row) return undefined;

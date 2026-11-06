@@ -51,13 +51,33 @@ function jobTitle(jd) {
   return characters.length > 120 ? `${characters.slice(0, 120).join('')}…` : firstLine;
 }
 
+export function screeningLabel({ screening }) {
+  return { matched: '符合筛选条件', pending: '待确认', excluded: '已退出自动筛选' }[screening?.status] ?? '';
+}
+
+function renderScreening(job) {
+  const { screening } = job;
+  if (!screening) return '';
+  const { matchStatus, pending, excluded, evidence, employerSource, matchNote } = screening;
+  const labels = [...pending, ...excluded];
+  if (matchStatus === 'pending') labels.push(matchNote || '简历匹配待确认');
+  if (matchStatus === 'unmatched') labels.push('核心职责或必备能力与简历不匹配');
+  return `<section><h2>筛选与匹配</h2>
+    <p>${screeningLabel(job)}</p>
+    ${labels.length ? `<ul>${labels.map(label => `<li>${escapeHtml(label)}</li>`).join('')}</ul>` : ''}
+    ${employerSource ? `<p><a href="${escapeHtml(employerSource)}">招聘主体归属依据</a></p>` : ''}
+    ${evidence.length ? `<h3>简历匹配依据</h3><dl>${evidence.map(item => `<dt>${item.kind === 'duty' ? '核心职责' : '必备能力'}</dt>
+      <dd>JD：<q>${escapeHtml(item.jdQuote)}</q></dd><dd>简历：<q>${escapeHtml(item.resumeQuote)}</q></dd>`).join('')}</dl>` : ''}
+  </section>`;
+}
+
 export function renderHome(jobs) {
-  const jobList = jobs.map(({ id, jd }) =>
-    `<li><a href="/jobs/${escapeHtml(id)}">${escapeHtml(jobTitle(jd))}</a></li>`).join('\n');
+  const jobList = jobs.map(job =>
+    `<li><a href="/jobs/${escapeHtml(job.id)}">${escapeHtml(job.title || jobTitle(job.jd))}</a>${screeningLabel(job) ? ` · ${screeningLabel(job)}` : ''}</li>`).join('\n');
 
   return renderPage('职位', `
 <h1>职位</h1>
-<p><a href="/search">官网搜索与 Agent 设置</a></p>
+<p><a href="/search">官网搜索与 Agent 设置</a> · <a href="/settings/resume">简历与求职方向</a></p>
 <section>
   <h2>已保存职位</h2>
   ${jobList ? `<ul>${jobList}</ul>` : '<p>还没有保存的职位。</p>'}
@@ -78,11 +98,13 @@ export function renderJob(job, application, interviewProgress = '') {
     : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`
+    : job.screening?.status === 'excluded' ? '<p>此职位已退出自动筛选结果。</p>'
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
 <h1>${escapeHtml(title)}</h1>
 ${sourceContent}
+${renderScreening(job)}
 <section>
   <h2>投递</h2>
   ${applicationContent}
