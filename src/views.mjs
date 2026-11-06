@@ -57,6 +57,7 @@ export function renderHome(jobs) {
 
   return renderPage('职位', `
 <h1>职位</h1>
+<p><a href="/search">官网搜索与 Agent 设置</a></p>
 <section>
   <h2>已保存职位</h2>
   ${jobList ? `<ul>${jobList}</ul>` : '<p>还没有保存的职位。</p>'}
@@ -69,14 +70,19 @@ export function renderHome(jobs) {
 </section>`);
 }
 
-export function renderJob({ id, jd }, application, interviewProgress = '') {
-  const title = jobTitle(jd);
+export function renderJob(job, application, interviewProgress = '') {
+  const { id, jd, source } = job;
+  const title = job.title || jobTitle(jd);
+  const sourceContent = source
+    ? `<section><h2>JD 来源</h2><p><a href="${escapeHtml(source.url)}">公司社招官网</a> · ${escapeHtml(source.locator ?? title)}</p></section>`
+    : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`
     : renderPostForm(`/jobs/${id}/application`, '确认已投递');
 
   return renderPage(title, `
 <h1>${escapeHtml(title)}</h1>
+${sourceContent}
 <section>
   <h2>投递</h2>
   ${applicationContent}

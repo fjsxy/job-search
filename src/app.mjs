@@ -5,6 +5,10 @@ import { HttpError, protectLocalRequest, readForm, redirect, sendHtml } from './
 import { handleInterviewRequest, renderInterviewProgress } from './interview-pages.mjs';
 import { createInterviewStore } from './interviews.mjs';
 import { createJobStore, openDatabase } from './store.mjs';
+import { createSearchRoutes } from './search-http.mjs';
+import { createOfficialDiscovery, createSearchRunner } from './search.mjs';
+import { createSettings } from './settings.mjs';
+import { createSubscriptionClient } from './subscription.mjs';
 import { escapeHtml, renderHome, renderJob, renderPage } from './views.mjs';
 
 const HOST = '127.0.0.1';
@@ -14,19 +18,30 @@ function loopbackUrl(port) {
   return new URL(`http://${HOST}:${port}`);
 }
 
-export async function startApp({ dataDir = DEFAULT_DATA_DIR, port = 3000 } = {}) {
+export async function startApp({
+  dataDir = DEFAULT_DATA_DIR, port = 3000, codexExecutable, readOfficialPage,
+  subscription = createSubscriptionClient({ executable: codexExecutable }),
+} = {}) {
   // 由本机进程持有数据库，浏览器关闭时不影响数据连接。
   const db = openDatabase(dataDir);
   const server = createServer();
-  server.once('close', () => db.close());
+  let search;
 
   try {
     const jobs = createJobStore(db);
     const interviews = createInterviewStore(db);
+    const settings = createSettings(db);
+    search = createSearchRunner({
+      db, jobs, settings, discover: createOfficialDiscovery(subscription, readOfficialPage),
+    });
+    const searchRoutes = createSearchRoutes({ settings, search });
     server.on('request', async (request, response) => {
       try {
         protectLocalRequest(request, response, loopbackUrl(request.socket.localPort));
-        await handleRequest(request, response, jobs, interviews);
+        const path = request.url.split('?', 1)[0];
+        if (!await searchRoutes(request, response, path)) {
+          await handleRequest(request, response, path, jobs, interviews);
+        }
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
         const message = status === 500 ? '本机服务处理失败，请重试' : error.message;
@@ -42,14 +57,17 @@ export async function startApp({ dataDir = DEFAULT_DATA_DIR, port = 3000 } = {})
 
   return {
     origin: loopbackUrl(server.address().port).origin,
-    close: () => new Promise((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    }),
+    async close() {
+      await Promise.all([
+        new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+        search.close(),
+      ]);
+      db.close();
+    },
   };
 }
 
-async function handleRequest(request, response, jobs, interviews) {
-  const path = request.url.split('?', 1)[0];
+async function handleRequest(request, response, path, jobs, interviews) {
   if (request.method === 'GET' && path === '/') {
     sendHtml(response, 200, renderHome(jobs.listJobs()));
     return;
