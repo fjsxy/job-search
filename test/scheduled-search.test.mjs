@@ -237,7 +237,7 @@ test('JS-08-03 定时搜索与同时触发的手动搜索共用任务，失败�
     },
     readPage: async url => {
       const job = Object.values(CANDIDATES).find(candidate => candidate.url === url);
-      return `<title>合成招聘</title><article><h1>${job.title}</h1>
+      return `<title>Example · ${EMPLOYER} 招聘</title><header><a href="/"><img alt="${EMPLOYER}"></a></header><article><h1>${job.title}</h1>
         <p>招聘主体：${EMPLOYER}</p><p>办公地点：杭州余杭区</p><p>月薪：${job.salaryQuote}</p>
         <p>招聘编号：${job.jobKey}</p><h2>岗位职责</h2><p>${DUTY}</p><h2>任职要求</h2><p>${REQUIREMENT}</p></article>`;
     },

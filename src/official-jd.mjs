@@ -1,5 +1,6 @@
 import { parse } from 'parse5';
 import { verifiedJobFacts } from './job-criteria.mjs';
+import { officialPublisher } from './official-publisher.mjs';
 import { belongsToSource } from './job-sources.mjs';
 import { publicUrl, readPublicPage } from './public-page.mjs';
 
@@ -19,7 +20,11 @@ const officialLinkLabel = /^(?:公司)?(?:招聘官网职位|官网职位|官网
 const idLabel = /^(?:(?:职位|岗位|招聘)编号|Job ID)\s*[:：]\s*/i;
 const otherSection = /^(?:加分项|优先条件|投递方式|薪资待遇|职位亮点|工作福利|公司介绍|关于我们|Apply\b|Preferred Qualifications\b)/i;
 
-function flatten(root) {
+function hidden(node) {
+  return node.attrs?.some(({ name, value }) => name === 'hidden' || (name === 'aria-hidden' && value === 'true'));
+}
+
+function flatten(root, budget) {
   const lines = [];
   let line = '';
   let links = [];
@@ -32,8 +37,9 @@ function flatten(root) {
   // 按块级节点保留原文行，忽略脚本、导航和模板中的字符串。
   const queue = [{ node: root }];
   while (queue.length) {
+    if (budget && --budget.remaining < 0) return null;
     const { node, end } = queue.pop();
-    if (skipped.has(node.tagName)) continue;
+    if (skipped.has(node.tagName) || hidden(node)) continue;
     if (end || node.tagName === 'br') {
       flush(node.tagName);
       continue;
@@ -87,16 +93,22 @@ function findPosition(document, candidate) {
   const headings = [];
   while (nodes.length) {
     const node = nodes.pop();
-    if (skipped.has(node.tagName)) continue;
+    if (skipped.has(node.tagName) || hidden(node)) continue;
     if (heading.test(node.tagName) && normalize(flatten(node).map(line => line.text).join(' ')) === title) headings.push(node);
     for (const child of node.childNodes ?? []) nodes.push(child);
   }
   const ambiguousTitle = headings.length > 1;
+  const visited = new Set();
+  // 共享祖先只扫描一次。不同祖先深度重叠时也有总扫描预算，超限保留待核验。
+  const budget = { remaining: 200_000 };
   for (const node of headings) {
     // 从标题往上找能覆盖职责和要求的最小容器；同页同名职位须有独立的招聘编号。
     let parent = node.parentNode;
     for (let depth = 0; parent && depth < 12; depth++, parent = parent.parentNode) {
-      const lines = flatten(parent);
+      if (visited.has(parent)) continue;
+      visited.add(parent);
+      const lines = flatten(parent, budget);
+      if (!lines) return null;
       const matchingTitles = lines.flatMap((line, index) => normalize(line.text) === title ? [index] : []);
       if (matchingTitles.length !== 1) continue;
       const job = sections(lines, matchingTitles[0]);
@@ -136,21 +148,27 @@ export function createOfficialVerifier(readPage = readPublicPage) {
     const opened = webMatches.some(({ action, result }) =>
       (['open_page', 'find_in_page'].includes(action) || /^turn\d+view\d+$/.test(result.ref_id))
       && Number(/^Total lines:\s*(\d+)$/u.exec(result.snippet)?.[1]) > 1);
-    if (kind === 'official' && (!opened || !hasOriginal)) return { lead };
     const html = await readPage(url, signal);
-    if (!html) return { lead, restricted: true };
+    if (!html) return { lead, restricted: opened || kind !== 'official' };
 
     const document = parse(html);
+    const head = document.childNodes.find(node => node.tagName === 'html')?.childNodes.find(node => node.tagName === 'head');
+    const branding = head?.childNodes.find(node => node.tagName === 'title')?.childNodes[0]?.value?.trim() ?? '';
+    const wholePage = flatten(document);
+    const visible = wholePage.map(line => line.text);
     const job = opened && hasOriginal && findPosition(document, candidate);
     if (!job) {
-      // 普通登录链接可以与公开 JD 共存。仅在无法取得正文且看到验证页或 JS 空壳时标记受限。
-      const visible = flatten(document).map(line => line.text).join(' ');
-      const restricted = kind !== 'official' && (!visible || /安全验证|访问受限|访问异常|请先登录|登录后查看|验证后继续/u.test(visible));
-      return { lead, restricted };
+      // 没有正文时，根据原站明确提示判为受限。普通登录入口和公开摘要仍可查看。
+      const wall = /安全验证|访问受限|访问异常|请先登录|登录后(?:方可)?查看|验证后继续|无权访问|access denied|verify (?:that )?you are human|checking your browser/iu;
+      return { lead, restricted: !visible.length || wall.test(branding) || visible.some(line => wall.test(line)) };
     }
     const metadata = job.metadata.map(line => line.text);
-    const branding = (html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] ?? '').trim();
     const { employerEvidence, ...facts } = verifiedJobFacts(job.scope.slice(1).map(line => line.text), candidate);
+    const publisher = kind === 'official'
+      ? officialPublisher({ document, link, branding, lines: visible, metadata, employers: facts.employers })
+      : null;
+    if (kind === 'official' && !publisher) return { lead };
+    source.officialPublisher = publisher ?? undefined;
     const cityEvidence = citedLine(candidate.city, facts.locations);
     const districtEvidence = citedLine(candidate.district, facts.locations);
     const salaryEvidence = citedLine(candidate.salaryQuote, facts.salaries);
@@ -163,7 +181,6 @@ export function createOfficialVerifier(readPage = readPublicPage) {
       .filter(id => /^[a-z0-9_-]{1,100}$/i.test(id)))];
     source.publisherJobKey = publisherIds.length === 1 ? publisherIds[0] : null;
     // 只有范围明确的官网详情可用于跨源合并。招聘帖的引用必须位于该岗位的正文区。
-    const wholePage = flatten(document);
     source.officialPosition = kind === 'official' && wholePage.filter(line => dutiesLabel.test(line.text)).length === 1
       && wholePage.filter(line => requirementsLabel.test(line.text)).length === 1
       && /\/(?:positions?|job[_-]?detail|jobs?|vacanc(?:y|ies)|careers?|recruit(?:ment)?)\/[^/]+/i.test(link.pathname);

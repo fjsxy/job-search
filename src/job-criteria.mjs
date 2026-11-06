@@ -1,14 +1,15 @@
-const EMPLOYER_LABEL = /^(?:招聘主体|招聘公司|雇主|用人单位|Employer)\s*[:：]\s*/iu;
+export const EMPLOYER_LABEL = /^(?:招聘主体|招聘公司|雇主|用人单位|Employer)\s*[:：]\s*/iu;
 const CONTRACT_LABEL = /^(?:签约主体|合同主体|劳动合同签订方)\s*[:：]\s*/u;
 const CONTRACT_GROUP_LABEL = /^(?:签约主体|合同主体)(?:所属集团|归属)\s*[:：]\s*/u;
 const GROUP_LABEL = /^(?:招聘主体(?:所属集团|归属)|招聘公司所属集团|雇主所属集团|用人单位所属集团)\s*[:：]\s*/u;
+const BASE_LABEL = /^(?:Base(?:城市)?|职位城市|工作城市|城市)\s*[:：]\s*/iu;
 const LOCATION_LABEL = /^(?:办公(?:地点|地址|区县)|工作(?:地点|地址|城市)|办公地|所在地|Base(?:城市)?|职位城市|城市|Location)\s*[:：]\s*/iu;
 const SALARY_LABEL = /^(?:(?:税前)?月薪|薪[资酬](?:范围|待遇)?|待遇|年薪|日薪|时薪|Salary|Pay)\s*[:：]\s*/iu;
 const HANGZHOU_DISTRICTS = [
   '余杭区', '西湖区', '上城区', '拱墅区', '滨江区', '萧山区', '临平区', '钱塘区', '富阳区', '临安区', '桐庐县', '淳安县', '建德市',
 ];
 const ALLOWED_DISTRICTS = new Set(['余杭区', '西湖区']);
-const CITY_NAMES = ['杭州', '上海', '北京', '深圳', '广州', '宁波', '南京', '苏州', '成都', '武汉', '香港'];
+const CITY_NAMES = ['杭州', '上海', '北京', '深圳', '广州', '宁波', '南京', '苏州', '成都', '武汉', '南昌', '香港'];
 
 // 仅匹配招聘主体字段中的完整名称。各分组按集团自披露资料维护。
 const EMPLOYER_GROUPS = [
@@ -111,30 +112,48 @@ export function verifiedJobFacts(metadata, { city, district, salaryQuote } = {})
 
 function checkLocation(job, pending, excluded) {
   const locationLines = job.facts?.locations ?? unique([job.cityEvidence, job.districtEvidence, job.city]);
-  const cities = new Set();
+  const baseCities = new Set();
+  const officeCities = new Set();
   const districts = new Set();
   // 多个来源可提供不同的已核对城市；纳入每个来源的候选城市用于解析其地点原文。
   const extraCities = (job.observedCities ?? [job.city]).filter(Boolean)
     .map(city => key(city).replace(/市$/u, '')).filter(city => /^[\p{Script=Han}]{2,8}$/u.test(city));
   const cityNames = [...new Set([...CITY_NAMES, ...extraCities])];
+  const hasBase = locationLines.some(line => BASE_LABEL.test(line));
   for (const line of locationLines) {
+    const explicitBase = BASE_LABEL.test(line);
     const address = key(line.replace(LOCATION_LABEL, ''));
     const identified = HANGZHOU_DISTRICTS.filter(district => address.includes(district));
-    for (const district of identified) districts.add(district);
-    if (/杭州|\bhangzhou\b/u.test(address) || identified.includes('余杭区')) cities.add('杭州');
-    for (const city of cityNames) {
-      if (address.includes(city)) cities.add(city);
+    const cities = cityNames.filter(city => address.includes(city));
+    if (/\bhangzhou\b/u.test(address)) cities.push('杭州');
+    if (!cities.length) {
+      // 市名可独立出现，也可写在区县前。同名区县本身不能证明办公城市。
+      const beforeDistrict = identified.length ? address.slice(0, address.indexOf(identified[0])) : '';
+      const cityPrefix = beforeDistrict.replace(/^浙江省?\s*/u, '').trim();
+      const city = /^(?:[\p{Script=Han}]{2,8}省\s*)?([\p{Script=Han}]{2,8}?)市/u.exec(address)?.[1]
+        ?? (/^[\p{Script=Han}]{2,8}$/u.test(cityPrefix) ? cityPrefix : null);
+      if (city) cities.push(city);
+      else if (identified.includes('余杭区')) cities.push('杭州');
     }
+    if (explicitBase) {
+      for (const city of cities) baseCities.add(city);
+      continue;
+    }
+    for (const city of cities) officeCities.add(city);
+    for (const district of identified) districts.add(district);
     if (/\byuhang\b/u.test(address) || /^(?:浙江)?杭州市?\s*余杭$/u.test(address)) districts.add('余杭区');
     if (/\bxihu\b/u.test(address) || /^(?:浙江)?杭州市?\s*西湖$/u.test(address)) districts.add('西湖区');
   }
+  // 有明确 Base 时以该字段为准，旧 JD 只写地点时仍可从办公城市推断。
+  const cities = hasBase ? baseCities : officeCities;
   if (cities.size > 1) pending.push('Base 信息有冲突，待确认');
   else if (!cities.size) pending.push('杭州 Base 待确认');
   else if (!cities.has('杭州')) excluded.push('Base 不在杭州');
 
-  if (!districts.size) pending.push('办公地点待确认');
-  else if (districts.size > 1) pending.push('办公地点信息有冲突，待确认');
-  else if (!ALLOWED_DISTRICTS.has([...districts][0])) excluded.push('办公地点不在余杭区或西湖区');
+  if (officeCities.size > 1 || districts.size > 1) pending.push('办公地点信息有冲突，待确认');
+  else if ((officeCities.size && !officeCities.has('杭州'))
+    || (districts.size && !ALLOWED_DISTRICTS.has([...districts][0]))) excluded.push('办公地点不在余杭区或西湖区');
+  else if (!districts.size) pending.push('办公地点待确认');
 }
 
 function parseSalary(line) {

@@ -1,13 +1,42 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createDiscoveryStore } from './discovered-jobs.mjs';
 
+function protectDatabaseFile(file, optional = false) {
+  const { O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_RDWR } = constants;
+  let fd;
+  try {
+    fd = openSync(file, O_RDWR | O_NOFOLLOW | O_NONBLOCK | (optional ? 0 : O_CREAT), 0o600);
+  } catch (error) {
+    if (optional && error.code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.nlink !== 1 || info.uid !== process.geteuid()) {
+      throw new Error('SQLite 文件必须是本机用户独占的普通文件');
+    }
+    // 通过文件描述符收紧旧文件权限，避免 chmod 跟随替换后的路径。
+    if ((info.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function openDatabase(dataDir) {
-  // 私有目录同时包含 SQLite 主文件和恢复事务所需的临时文件。
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(join(dataDir, 'job-search.sqlite'));
+  const directoryPath = resolve(dataDir);
+  mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+  const directory = lstatSync(directoryPath);
+  if (!directory.isDirectory() || directory.uid !== process.geteuid() || (directory.mode & 0o022)) {
+    throw new Error('数据目录必须由本机用户控制，其他用户不能写入');
+  }
+  // 关键：先以私有权限建库，SQLite 新建的事务文件继承主文件的权限。
+  const file = join(directoryPath, 'job-search.sqlite');
+  protectDatabaseFile(file);
+  for (const suffix of ['-journal', '-wal', '-shm']) protectDatabaseFile(file + suffix, true);
+  const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     return db;

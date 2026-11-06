@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 async function testServer(t) {
@@ -223,4 +224,81 @@ test('本机界面拒绝意外的 Host', async (t) => {
   });
 
   assert.equal(status, 421);
+});
+
+test('自定义数据目录保留权限，SQLite 主文件与事务文件仅本机用户可读写', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'job-search-modes-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const dataDir = join(parent, 'custom');
+  await mkdir(dataDir);
+  await chmod(dataDir, 0o755);
+  const file = join(dataDir, 'job-search.sqlite');
+  const { startApp } = await import('../src/app.mjs');
+  const app = await startApp({ dataDir, port: 0 });
+  t.after(() => app.close());
+  assert.equal((await stat(dataDir)).mode & 0o777, 0o755);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+  const db = new DatabaseSync(file);
+  try {
+    // 打开实际回滚事务，在 SQLite 删除 sidecar 前检查其权限。
+    db.exec('BEGIN IMMEDIATE; CREATE TABLE test_permissions (id INTEGER)');
+    assert.equal((await stat(file + '-journal')).mode & 0o777, 0o600);
+    db.exec('ROLLBACK; PRAGMA journal_mode = WAL; CREATE TABLE test_permissions (id INTEGER)');
+    for (const suffix of ['-wal', '-shm']) {
+      assert.equal((await stat(file + suffix)).mode & 0o777, 0o600);
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test('启动时收紧旧数据库权限，拒绝指向其他文件的主文件或 sidecar', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'job-search-modes-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const file = join(parent, 'job-search.sqlite');
+  const { startApp } = await import('../src/app.mjs');
+  const original = await startApp({ dataDir: parent, port: 0 });
+  const jobPath = await registerJob(original.origin);
+  await original.close();
+  await chmod(file, 0o644);
+  const reopened = await startApp({ dataDir: parent, port: 0 });
+  try {
+    assert.match(await openPage(reopened.origin, jobPath), /已投递/);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+  } finally {
+    await reopened.close();
+  }
+
+  const other = join(parent, 'other');
+  await writeFile(other, '另一个本机文件', { mode: 0o644 });
+  for (const suffix of ['-journal', '-wal', '-shm', '']) {
+    if (!suffix) await rm(file);
+    const unsafe = file + suffix;
+    await (suffix === '-wal' ? link : symlink)(other, unsafe);
+    await assert.rejects(startApp({ dataDir: parent, port: 0 }));
+    assert.equal(await readFile(other, 'utf8'), '另一个本机文件');
+    assert.equal((await stat(other)).mode & 0o777, 0o644);
+    await rm(unsafe);
+  }
+});
+
+test('两份手动 JD 按唯一招聘编号合并，原文和投递轮次均保留', async t => {
+  const origin = await openApp(t);
+  const job = '平台工程师\n招聘主体：合成科技\n招聘编号：JOB-1\n职责：原 JD 文本';
+  const path = await registerJob(origin, job);
+  assert.equal((await submit(origin, `${path}/application/interviews`, { result: 'passed' })).status, 303);
+  const update = job.replace('原 JD 文本', '新 JD 文本');
+  const second = await submit(origin, '/jobs', { jd: update });
+  assert.equal(second.status, 303);
+  assert.equal(second.headers.get('location'), path);
+  assert.equal((await submit(origin, `${path}/application`, {})).status, 303);
+  const detail = await openPage(origin, path);
+  assert.match(detail, /原 JD 文本[\s\S]*新 JD 文本/);
+  assert.match(detail, /当前进度：一面通过/);
+  assert.equal((detail.match(/<li>已投递<\/li>/g) ?? []).length, 1);
+  const distinct = await submit(origin, '/jobs', { jd: update.replace('合成科技', '另一家公司') });
+  assert.notEqual(distinct.headers.get('location'), path);
+  const anonymous = await submit(origin, '/jobs', { jd: update.replace('招聘编号：JOB-1\n', '') });
+  assert.notEqual(anonymous.headers.get('location'), path);
 });

@@ -123,8 +123,8 @@ function officialFixtures(jobs) {
     duties: lead ? [] : [DUTY], requirements: lead ? [] : [REQUIREMENT],
   }));
   const officialPages = Object.fromEntries(officialCandidates.map((job, index) => [
-    job.url, `<main><article><h1>${job.title}</h1>
-      <p>招聘主体：${job.employer}</p><p>办公地点：${job.city}${job.district ?? ''}</p>
+    job.url, `<title>Example · ${job.employer} 招聘</title><header><a href="/"><img alt="${job.employer}"></a></header><main><article><h1>${job.title}</h1>
+      <p>招聘主体：${job.employer}</p><p>办公地点：${jobs[index].office ?? job.city + (job.district ?? '')}</p>
       ${job.salaryQuote ? `<p>薪资：${job.salaryQuote}</p>` : ''}
       ${jobs[index].extra ?? ''}
       <h2>岗位职责</h2><p>${DUTY}</p><h2>任职要求</h2><p>${REQUIREMENT}</p>
@@ -288,4 +288,17 @@ test('JS-05-03 更新原始简历会停用旧技术文本，历史结果的证�
   assert.doesNotMatch(await app.page(runPath), /符合筛选条件/);
   await runSearch(app);
   assert.equal((await app.calls()).filter(call => call.input.jobs).length, 1);
+});
+
+test('明确 Base 和实际办公区县独立筛选，Base 中的区县不能代替办公地址', async t => {
+  const app = await start(t, officialFixtures([
+    { title: '上海 Base 杭州办公', extra: '<p>Base：上海</p>' },
+    { title: '杭州 Base 上海办公', city: '上海', district: '浦东新区', extra: '<p>Base：杭州</p>' },
+    { title: '杭州 Base 南昌西湖办公', city: '杭州', district: null, extra: '<p>Base：杭州</p><p>办公地址：南昌西湖区</p>', office: '南昌西湖区' },
+    { title: '杭州 Base 余杭办公', extra: '<p>Base：杭州西湖区</p>' },
+  ]));
+  const page = await runSearch(app);
+  assert.doesNotMatch(page, /上海 Base 杭州办公|杭州 Base 上海办公|杭州 Base 南昌西湖办公/);
+  const detail = await app.page(jobLink(page, '杭州 Base 余杭办公'));
+  assert.doesNotMatch(detail, /办公地点信息有冲突|办公地点待确认|Base 信息有冲突/);
 });

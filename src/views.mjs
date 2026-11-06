@@ -108,8 +108,10 @@ export function renderJob(job, application, interviewProgress = '') {
     <summary>${sourceLabels[source.kind]} · ${escapeHtml(source.locator ?? title)}</summary>
     <pre><code>${escapeHtml(jd)}</code></pre>
   </details>`).join('') : '';
-  const manual = sources?.length && manualJds?.length ? `<section><h2>手动导入的 JD</h2>
-    ${manualJds.map(text => `<pre><code>${escapeHtml(text)}</code></pre>`).join('')}
+  // 已展示的手动正文不重复渲染，归并时粘贴的其他版本仍保留。
+  const manualVersions = [...new Set(manualJds)].filter(text => sources?.length || text !== jd);
+  const manual = manualVersions.length ? `<section><h2>手动导入的 JD</h2>
+    ${manualVersions.map(text => `<pre><code>${escapeHtml(text)}</code></pre>`).join('')}
   </section>` : '';
   const applicationContent = application
     ? `<ul><li>已投递</li></ul>${interviewProgress}`

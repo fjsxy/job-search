@@ -68,6 +68,14 @@ export function createDiscoveryStore(db) {
     );
   `);
 
+  // 旧官网记录尚未核对发布方，仍保留原文和历史，但不得再作为跨源归并凭据。
+  db.exec(`
+    UPDATE job_observations SET publisher_key = NULL, owned_url_key = NULL
+    WHERE (publisher_key IS NOT NULL OR owned_url_key IS NOT NULL)
+      AND json_extract(details, '$.source.kind') = 'official'
+      AND json_extract(details, '$.source.officialPublisher') IS NULL
+  `);
+
   const saveObservation = db.prepare(`
     INSERT INTO job_observations (job_id, source_key, publisher_key, owned_url_key, cited_url_key, jd, details, urls)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -92,8 +100,10 @@ export function createDiscoveryStore(db) {
   `);
   const insertManual = db.prepare('INSERT INTO manual_jds (job_id, jd, publisher_key, owned_url_key) VALUES (?, ?, ?, ?)');
   const selectManual = db.prepare('SELECT jd FROM manual_jds WHERE job_id = ? ORDER BY rowid');
-  const verifiedMatchForManual = db.prepare(`
-    SELECT DISTINCT job_id AS id FROM job_observations WHERE publisher_key = ? OR owned_url_key = ?
+  const matchesForManual = db.prepare(`
+    SELECT job_id AS id FROM job_observations WHERE publisher_key = ? OR owned_url_key = ?
+    UNION
+    SELECT job_id AS id FROM manual_jds WHERE publisher_key = ?
   `);
   const moveManual = db.prepare('UPDATE manual_jds SET job_id = ? WHERE job_id = ?');
   const insertJob = db.prepare('INSERT INTO jobs (id, jd) VALUES (?, ?)');
@@ -162,10 +172,10 @@ export function createDiscoveryStore(db) {
   return {
     addManual(jd) {
       const { publisher, owned } = manualIdentity(jd);
-      // 已有且唯一的公开核实记录可以直接接收原文。匹配有歧义时保存为独立手动职位。
+      // 招聘主体和编号可以匹配手动记录，官网链接仍须有唯一的已核实原文。
       db.exec('BEGIN IMMEDIATE');
       try {
-        const matches = verifiedMatchForManual.all(publisher, owned);
+        const matches = matchesForManual.all(publisher, owned, publisher);
         const existing = matches.length === 1 && matches[0].id;
         const id = existing || randomUUID();
         if (!existing) insertJob.run(id, jd);
@@ -204,8 +214,15 @@ export function createDiscoveryStore(db) {
       const changed = Boolean(prior && prior.firstRunId !== runId
         && comparableJob((previousSource ?? previousDisplay).jd) !== comparableJob(jd));
       const sameSource = prior && observationKeys(prior).source === key.source;
+      // 只有同一份 JD 可用另一来源刷新匹配，展示正文与引文一起切换。
+      const incomingMatch = details.screening;
+      const priorMatch = prior?.screening;
+      const refreshedMatch = prior && incomingMatch?.resumeRevision
+        && ['matched', 'unmatched'].includes(incomingMatch.matchStatus)
+        && (incomingMatch.resumeRevision !== priorMatch?.resumeRevision || priorMatch?.matchStatus === 'pending')
+        && comparableJob(previousDisplay.jd) === comparableJob(jd);
       // 每个来源独立比对自己的上一份 JD，避免两个版本来回覆盖并重复标为更新。
-      const display = !prior || sameSource || changed ? details : prior;
+      const display = !prior || sameSource || changed || refreshedMatch ? details : prior;
       const [oldest] = previousDetails
         .map(details => ({ at: details.firstDiscoveredAt ?? details.source.verifiedAt, runId: details.firstRunId }))
         .filter(item => item.at).sort((left, right) => left.at.localeCompare(right.at));
